@@ -23,6 +23,8 @@
 # ***************************************************************************
 
 import FreeCAD, FreeCADGui
+import Draft
+import Mesh
 import os, math
 
 from PySide import QtGui, QtCore
@@ -41,10 +43,22 @@ class PathSimPanel:
 		# self will create a Qt widget from the ui file
 		self.form = FreeCADGui.PySideUic.loadUi(path_to_ui)
 
+		self.tool = None
+		self.sim = PathSim.PathSim()
 		self.jobs = []
+		self.mesh = Mesh.Mesh()
+		self.meshView = None
 
 		# connect ui components
 		self.form.comboJobs.currentIndexChanged.connect(self.onJobChange)
+		self.form.toolButtonStop.clicked.connect(self.simStop)
+		self.form.toolButtonPlay.clicked.connect(self.simPlay)
+		#self.Connect(form.toolButtonPause, self.SimPause)
+		#self.Connect(form.toolButtonStep, self.SimStep)
+		#self.Connect(form.toolButtonFF, self.SimFF)
+		self.sim.updatePos.connect(self.setPos)
+		self.sim.complete.connect(self.simComplete)
+		self.sim.updateMesh.connect(self.updateMesh)
 
 		self.setupUi()
 
@@ -52,6 +66,7 @@ class PathSimPanel:
 		jobList = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")
 		self.form.comboJobs.clear()
 		self.jobs = []
+
 		for j in jobList:
 			self.jobs.append(j)
 			self.form.comboJobs.addItem(j.ViewObject.Icon, j.Label)
@@ -68,6 +83,7 @@ class PathSimPanel:
 			FreeCAD.Console.PrintMessage("\nApply Signal")
 
 	def quit(self):
+		self.simComplete()
 		FreeCADGui.Control.closeDialog()
 		
 	def getStandardButtons(self):
@@ -86,10 +102,86 @@ class PathSimPanel:
 				self.operations.append(op)
 				self.form.listOperations.addItem(listItem)
 
-def Show():
-    """Open the preferences dialog."""
-    panel = PathSimPanel()
+	def getOperations(self):
+		activeOps = []
+		for i in range(self.form.listOperations.count()):
+			if self.form.listOperations.item(i).checkState() == QtCore.Qt.CheckState.Checked:
+				activeOps.append(self.operations[i])
 
-    if FreeCADGui.Control.activeDialog():
-	    FreeCAD.Console.PrintMessage("Dialog Panel currently open: Close it?")
-    FreeCADGui.Control.showDialog(panel)
+		return activeOps
+
+	def simPlay(self):
+
+		if self.sim.isRunning():
+			return
+
+		operations = self.getOperations()
+		if len(operations) == 0:
+			print("No Operations active in selected job")
+			return
+
+		self.tool = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "Tool")
+		self.tool.ViewObject.Proxy = 0
+		self.tool.ViewObject.hide()
+
+		self.meshView = FreeCAD.ActiveDocument.addObject("Mesh::Feature", "libcutsim")
+
+		for op in operations:
+			print(op.Label)
+			# job = self.jobs[self.form.comboJobs.currentIndex()]
+			self.tool.Shape = op.ToolController.Tool.Shape
+			self.tool.ViewObject.show()
+			self.sim.commands += op.Path.Commands
+		
+		self.sim.start()
+
+	def simStop(self):
+		self.simComplete()
+
+	def setPos(self, pos):
+		# update tool position 
+		self.tool.Placement = pos
+		#Draft.makePoint(pos.x, pos.y, pos.z)
+	
+	def simComplete(self):
+		# clean up tool
+		if self.sim.isRunning() or not self.sim.isFinished():
+			self.sim.stop()
+
+		if self.tool is not None:
+			FreeCAD.ActiveDocument.removeObject(self.tool.Name)
+			self.tool = None
+
+		if self.meshView is not None:
+			FreeCAD.ActiveDocument.removeObject(self.meshView.Name)
+			self.meshView = None
+	
+	def updateMesh(self):
+		# print("update Mesh")
+		self.mesh.clear()
+		self.mesh.read('/home/sandal/libcutsim.stl')
+		if self.meshView is not None:
+			self.meshView.Mesh = self.mesh
+			FreeCAD.ActiveDocument.recompute()
+
+
+
+def Show():
+	try:
+		import libcutsim
+		panel = PathSimPanel()
+
+		if FreeCADGui.Control.activeDialog():
+			FreeCAD.Console.PrintMessage("Dialog Panel currently open: Close it?")
+
+		FreeCADGui.Control.showDialog(panel)
+	
+	except ImportError:
+		msgBox = QtGui.QMessageBox()
+		msgBox.setText("libcutsim python module not installed")
+		msgBox.exec_()
+		# TODO: Delete me
+		# show the dialog anyway for testing - delete me
+		print("Delete me - PathSimGui.py")
+		panel = PathSimPanel()
+		FreeCADGui.Control.showDialog(panel)
