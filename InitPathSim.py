@@ -62,7 +62,7 @@ def updateMenu(workbench):
 
         # create an action for this addon
         action = QtGui.QAction(addonMenu)
-        action.setText("Path Simulator")
+        action.setText("Path Simulator Next")
         action.setIcon(QtGui.QPixmap(getIcon('Path_Sim.svg')))
         action.setStatusTip("Simulate CNC Toolpath")
         action.triggered.connect(PathSimGui.Show)
