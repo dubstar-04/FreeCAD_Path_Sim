@@ -2,7 +2,7 @@
 
 # ***************************************************************************
 # *                                                                         *
-# *   Copyright (c) 2021 Daniel Wood <s.d.wood.82@googlemail.com>            *
+# *   Copyright (c) 2020 Daniel Wood <s.d.wood.82@googlemail.com>            *
 # *                                                                         *
 # *   This program is free software; you can redistribute it and/or modify  *
 # *   it under the terms of the GNU Lesser General Public License (LGPL)    *
@@ -22,52 +22,32 @@
 # *                                                                         *
 # ***************************************************************************
 
-import FreeCADGui
-from PySide import QtGui
-import PathSimGui, PathSim
-import os
+import FreeCAD
+import Mesh
 
-__dir__ = os.path.dirname(__file__)
-iconPath = os.path.join( __dir__, 'Icons' )
 
-def getIcon(iconName):
-     return os.path.join( iconPath , iconName)
+class Engine:
+	def __init__(self):
 
-def updateMenu(workbench):
+		self.tool = None
+		self.cutShape = None
 
-    if workbench == 'PathWorkbench':
-    
-        print('Path Simulator Addon loaded:', workbench)
-        
-        mw = FreeCADGui.getMainWindow()
-        addonMenu = None
+	def setTool(self, tool):
+		''' set the tool definition. tool is a freecad shape object'''
+		self.tool = tool
 
-        # Find the main path menu
-        pathMenu = mw.findChild(QtGui.QMenu, "&Path")
+	def setStock(self, stock):
+		''' set the starting stock definition. stock is a freecad shape object'''
+		self.cutShape = stock
 
-        for menu in pathMenu.actions():
-            if menu.text() == "Path Addons":
-                # create a new addon menu
-                addonMenu = menu.menu()
-                break
+	def getMesh(self):
+		''' return the cut shape as a freecad Mesh object'''
+		# print("native_engine: get mesh")
+		mesh = Mesh.Mesh(self.cutShape.tessellate(0.1))
+		return mesh
 
-        if addonMenu is None:
-            addonMenu = QtGui.QMenu("Path Addons")
-            addonMenu.setObjectName("Path_Addons")
-
-            # Find the dressup menu entry
-            dressupMenu = mw.findChild(QtGui.QMenu, "Path Dressup")
-
-            pathMenu.insertMenu(dressupMenu.menuAction(), addonMenu)
-
-        # create an action for this addon
-        action = QtGui.QAction(addonMenu)
-        action.setText("Path Simulator Next")
-        action.setIcon(QtGui.QPixmap(getIcon('Path_Sim.svg')))
-        action.setStatusTip("Simulate CNC Toolpath")
-        action.triggered.connect(PathSimGui.Show)
-
-        # append this addon to addon menu
-        addonMenu.addAction(action)
-
-FreeCADGui.getMainWindow().workbenchActivated.connect(updateMenu)
+	def processPosition(self, placement):
+		''' process the new tool position. placement is a freecad placement object'''
+		# print("native_engine: processPosition")
+		toolShape = FreeCAD.ActiveDocument.getObject("Tool").Shape
+		self.cutShape = self.cutShape.cut(toolShape)
