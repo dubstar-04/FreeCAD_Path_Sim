@@ -22,10 +22,14 @@
 # *                                                                         *
 # ***************************************************************************
 
-import FreeCAD, FreeCADGui
+import FreeCAD
+import FreeCADGui
 import Draft
 import Mesh
-import os, math
+
+import os 
+import math
+import pkgutil
 
 from PySide import QtGui, QtCore
 from PySide.QtGui import QTreeWidgetItem
@@ -33,10 +37,12 @@ from PySide.QtGui import QTreeWidgetItem
 import PathScripts.PathUtil as PathUtil
 
 import PathSim
+import PathSimTimelineGui
 
 dir = os.path.dirname(__file__)
 ui_name = "PathSimGui.ui"
-path_to_ui = dir + "/" + ui_name
+path_to_ui = dir + os.sep + ui_name
+path_to_engines = dir + os.sep + "engines"
 
 class PathSimPanel:
 	def __init__(self, obj=None):
@@ -46,19 +52,24 @@ class PathSimPanel:
 		self.tool = None
 		self.sim = PathSim.PathSim()
 		self.jobs = []
-		self.mesh = Mesh.Mesh()
 		self.meshView = None
+		self.counter = 0
+
+		self.timeline = PathSimTimelineGui.timeline()
 
 		# connect ui components
 		self.form.comboJobs.currentIndexChanged.connect(self.onJobChange)
-		self.form.toolButtonStop.clicked.connect(self.simStop)
-		self.form.toolButtonPlay.clicked.connect(self.simPlay)
-		#self.Connect(form.toolButtonPause, self.SimPause)
-		#self.Connect(form.toolButtonStep, self.SimStep)
-		#self.Connect(form.toolButtonFF, self.SimFF)
 		self.sim.updatePos.connect(self.setPos)
 		self.sim.complete.connect(self.simComplete)
 		self.sim.updateMesh.connect(self.updateMesh)
+		self.sim.progress.connect(self.timeline.setProgress)
+		self.sim.cleanup.connect(self.cleanup)
+		self.sim.changedOp.connect(self.loadTool)
+
+		#self.timeline.quitSignal.connect(self.simStop)
+		self.timeline.playSignal.connect(self.simPlay)
+		self.timeline.stopSignal.connect(self.simStop)
+		self.timeline.skipRequested.connect(self.sim.skipTo)
 
 		self.setupUi()
 
@@ -70,6 +81,17 @@ class PathSimPanel:
 		for j in jobList:
 			self.jobs.append(j)
 			self.form.comboJobs.addItem(j.ViewObject.Icon, j.Label)
+
+		#show the timeline widget
+		self.timeline.show()
+
+		self.form.comboEngines.clear()
+		engines = os.listdir(path_to_engines)
+		for filename in engines:
+			engine_str = "_engine.py"
+			if engine_str in filename:
+				engineName = filename.replace(".py", "")
+				self.form.comboEngines.addItem(engineName)
 		
 	def reject(self):
 		self.quit()
@@ -83,7 +105,9 @@ class PathSimPanel:
 			FreeCAD.Console.PrintMessage("\nApply Signal")
 
 	def quit(self):
-		self.simComplete()
+		self.timeline.quit()
+		self.simStop()
+		self.cleanup()
 		FreeCADGui.Control.closeDialog()
 		
 	def getStandardButtons(self):
@@ -119,69 +143,57 @@ class PathSimPanel:
 		if len(operations) == 0:
 			print("No Operations active in selected job")
 			return
-
-		self.tool = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "Tool")
-		self.tool.ViewObject.Proxy = 0
-		self.tool.ViewObject.hide()
-
-		self.meshView = FreeCAD.ActiveDocument.addObject("Mesh::Feature", "libcutsim")
-
-		for op in operations:
-			print(op.Label)
-			# job = self.jobs[self.form.comboJobs.currentIndex()]
-			self.tool.Shape = op.ToolController.Tool.Shape
-			self.tool.ViewObject.show()
-			self.sim.commands += op.Path.Commands
 		
+		self.cleanup()
+		self.meshView = FreeCAD.ActiveDocument.addObject("Mesh::Feature", "cutshape")
+		job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
+		self.meshView.Mesh = Mesh.Mesh(job.Stock.Shape.tessellate(0.1))
+
+		self.sim.setupEngine(self.form.comboEngines.currentText())
+		self.sim.setOperations(operations)
 		self.sim.start()
+	
+	def loadTool(self, op):
+		''' load the tool for the operation '''
+		if self.tool is None:
+			self.tool = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "Tool")
+			self.tool.ViewObject.Proxy = 0
+		self.tool.Shape = op.ToolController.Tool.Shape
 
 	def simStop(self):
-		self.simComplete()
+		if self.sim.isRunning() or not self.sim.isFinished():
+			self.sim.stop()
 
 	def setPos(self, pos):
 		# update tool position 
 		self.tool.Placement = pos
-		#Draft.makePoint(pos.x, pos.y, pos.z)
-	
-	def simComplete(self):
-		# clean up tool
-		if self.sim.isRunning() or not self.sim.isFinished():
-			self.sim.stop()
 
+	def cleanup(self):
+		self.cleanupStock()
+		self.cleanupTool()
+
+	def cleanupTool(self):
+		''' Delete the tool created for the simulation '''
 		if self.tool is not None:
 			FreeCAD.ActiveDocument.removeObject(self.tool.Name)
 			self.tool = None
 
+	def cleanupStock(self):
+		''' Delete the stock created for the simulation '''
 		if self.meshView is not None:
 			FreeCAD.ActiveDocument.removeObject(self.meshView.Name)
 			self.meshView = None
-	
-	def updateMesh(self):
-		# print("update Mesh")
-		self.mesh.clear()
-		self.mesh.read('/home/sandal/libcutsim.stl')
+
+	def simComplete(self):
+		''' slot called on simulation completion'''
+		self.cleanupTool()
+
+	def updateMesh(self, mesh):
+		''' slot called at intervals to update the meshView'''
 		if self.meshView is not None:
-			self.meshView.Mesh = self.mesh
+			self.meshView.Mesh = mesh
 			FreeCAD.ActiveDocument.recompute()
 
-
-
 def Show():
-	try:
-		import libcutsim
-		panel = PathSimPanel()
-
-		if FreeCADGui.Control.activeDialog():
-			FreeCAD.Console.PrintMessage("Dialog Panel currently open: Close it?")
-
-		FreeCADGui.Control.showDialog(panel)
-	
-	except ImportError:
-		msgBox = QtGui.QMessageBox()
-		msgBox.setText("libcutsim python module not installed")
-		msgBox.exec_()
-		# TODO: Delete me
-		# show the dialog anyway for testing - delete me
-		print("Delete me - PathSimGui.py")
-		panel = PathSimPanel()
-		FreeCADGui.Control.showDialog(panel)
+	panel = PathSimPanel()
+	FreeCADGui.Control.showDialog(panel)
