@@ -44,7 +44,7 @@ class PathSim (QtCore.QThread):
 	def __init__(self):
 		QtCore.QThread.__init__(self)
 		self.operations = []
-		self.stepDistance = 0.5
+		self.stepDistance = 2
 		# self.skippedDistance = 0
 		self.running = False
 		self.idx = 0  # index of current position
@@ -168,34 +168,30 @@ class PathSim (QtCore.QThread):
 					if name in ["G2", "G02", "G3", "G03"]:
 						radius = round(centrePos.sub(currentPos).Length, 2)
 
-						# print("Arc Count:", arcCount, name)
-						# print("Pos", currentPos, centrePos, pos)
-						# print("Rad", radius)
-
 						aX = currentPos.x - centrePos.x
 						aY = currentPos.y - centrePos.y
 						bX = pos.x - centrePos.x
 						bY = pos.y - centrePos.y
 
 						startAng = math.atan2(aY, aX) 
-						endAng = math.atan2(bY, bX)
+						# endAng = math.atan2(bY, bX)
 						totalAng = math.atan2(aX * bY - aY * bX, aX * bX + aY * bY)
 
-						if totalAng <= 0:
-							totalAng += math.pi * 2
+						if round(totalAng, 2) == 0.0:
+							totalAng = math.pi * 2
 
 						if name in ["G2", "G02"]:
-							totalAng -= math.pi * 2
-
+							totalAng = -abs(totalAng)		
+						
 						if name in ["G3", "G03"]:
-							totalAng += math.pi * 2
+							totalAng = abs(totalAng)
 
 						arcLen = abs(totalAng) * radius
 						segments = math.ceil(arcLen / self.stepDistance)
 						stepAng = totalAng / segments
 						stepZ = (pos.z - currentPos.z) / segments
 
-						# print("Angles: start", startAng, " end: ", endAng, "total: ", totalAng, " segments: ", segments)
+						#print("Final Angles: start", startAng, " end: ", endAng, "total: ", totalAng, " segments: ", segments)
 
 						for seg in range(segments):
 							angle = startAng + seg * stepAng
