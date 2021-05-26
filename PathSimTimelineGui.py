@@ -1,7 +1,32 @@
-import FreeCAD,FreeCADGui
+# -*- coding: utf-8 -*-
+
+# ***************************************************************************
+# *                                                                         *
+# *   Copyright (c) 2021 Daniel Wood <s.d.wood.82@googlemail.com>            *
+# *                                                                         *
+# *   This program is free software; you can redistribute it and/or modify  *
+# *   it under the terms of the GNU Lesser General Public License (LGPL)    *
+# *   as published by the Free Software Foundation; either version 2 of     *
+# *   the License, or (at your option) any later version.                   *
+# *   for detail see the LICENCE text file.                                 *
+# *                                                                         *
+# *   This program is distributed in the hope that it will be useful,       *
+# *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+# *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+# *   GNU Library General Public License for more details.                  *
+# *                                                                         *
+# *   You should have received a copy of the GNU Library General Public     *
+# *   License along with this program; if not, write to the Free Software   *
+# *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  *
+# *   USA                                                                   *
+# *                                                                         *
+# ***************************************************************************
+
 import os
+
 from PySide import QtGui, QtCore
-from PySide.QtGui import QApplication, QDialog, QMainWindow
+
+import FreeCADGui
 
 dir = os.path.dirname(__file__)
 ui_name = "PathSimTimelineGui.ui"
@@ -9,53 +34,36 @@ path_to_ui = dir + "/" + ui_name
 
 mw = FreeCADGui.getMainWindow()
 
-'''
-class ProgressMarker(QtGui.QGraphicsRectItem):
 
-    def __init__(self, w, h, maxX):
-        super().__init__(0, 0, w, h)
-        self.setFlag(QtGui.QGraphicsItem.ItemIsMovable, True)
-        self.maxX = maxX - w
-        self.setFlag(QtGui.QGraphicsItem.ItemSendsGeometryChanges, True)
-
-    def itemChange(self, change, value):
-        if change == QtGui.QGraphicsItem.ItemPositionChange:
-            x = value.x()
-
-            if x < 0:
-                x = 0
-
-            if x > self.maxX:
-                x = self.maxX
-
-            return QtCore.QPointF(x, self.y())
-        return value
-'''
-
-
-class ProgressMarker(QtGui.QGraphicsObject):
+class ProgressGraphicsShape(QtGui.QGraphicsObject):
     ''' graphics item to represent the progress marker on the timeline '''
 
     progresschange = QtCore.Signal(int)
-    skipRequested = QtCore.Signal()
+    skipRequested = QtCore.Signal(int)
 
-    def __init__(self, w, h, maxX):
+    def __init__(self, w, h):
         super().__init__()
         self.setFlag(QtGui.QGraphicsItem.ItemIsMovable, True)
-        self.maxX = maxX - w
         self.setFlag(QtGui.QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.xMax = 0
         self.width = w
         self.height = h
-        self.brush = None
-        self.pen = None
+        self.skipping = False  # true if the widget is being dragged
+        self.brush = QtGui.QBrush()
+        self.brush.setStyle(QtCore.Qt.SolidPattern)
+        self.pen = QtGui.QPen()
+
+    def setColour(self, colour):
+        self.brush.setColor(colour)
+        self.pen.setColor(colour)
 
     def setRect(self, x, y, w, h):
         self.setPos(x, y)
         self.width = w
         self.height = h
 
-    def setMaxX(self, maxx):
-        self.maxX = maxx
+    def setMaxX(self, x):
+        self.xMax = x
 
     def setBrush(self, brush):
         self.brush = brush
@@ -80,8 +88,8 @@ class ProgressMarker(QtGui.QGraphicsObject):
             if x < 0:
                 x = 0
 
-            if x > self.maxX:
-                x = self.maxX
+            if x > self.xMax:
+                x = self.xMax
 
             self.progresschange.emit(x)
 
@@ -90,11 +98,17 @@ class ProgressMarker(QtGui.QGraphicsObject):
         return value
 
     def mouseReleaseEvent(self, event):
-        print("mouse event", event)
+        # print("mouse release event", event)
+        self.skipRequested.emit(event.pos().x())
+        self.skipping = False
+
+    def mousePressEvent(self, event):
+        # print("mouse down event", event)
+        self.skipping = True
 
 
 class timeline(QtCore.QObject):
-
+    ''' form and controls shown on screen during the simulation '''
     # quitSignal = QtCore.Signal()
     playSignal = QtCore.Signal()
     stopSignal = QtCore.Signal()
@@ -115,8 +129,8 @@ class timeline(QtCore.QObject):
         self.progressMarker = None  # graphics item representing the progress marker
         self.progressBarWidth = 0  # length of the timeline used for progess calculations and positions
 
-        self.timeLine = QtGui.QGraphicsRectItem()
-        self.progressMarker = ProgressMarker(10, 10, 0)
+        self.timeLine = ProgressGraphicsShape(10, 10)
+        self.progressMarker = ProgressGraphicsShape(10, 10)
 
 
         ### collect widget
@@ -129,8 +143,9 @@ class timeline(QtCore.QObject):
         ### connect
         self.playButton.clicked.connect(self.play)
         self.stopButton.clicked.connect(self.stop)
-        self.progressMarker.progresschange.connect(self.progressUpdate)
-        self.progressMarker.skipRequested.connect(self.skip)
+        # self.progressMarker.progresschange.connect(self.progressUpdate)
+        # self.progressMarker.skipRequested.connect(self.skip)
+        self.timeLine.skipRequested.connect(self.skip)
 
         # initialise form
         self.initProgressBar()
@@ -138,24 +153,18 @@ class timeline(QtCore.QObject):
         self.setProgress(0)
 
     def initProgressBar(self):
-
-        ## create brush and pen for drawing
-        brush = QtGui.QBrush()
-        brush.setStyle(QtCore.Qt.SolidPattern)
-        pen = QtGui.QPen()
+        ''' initialise the ui, loading the graphics widgets'''
 
         def addToScene(colour, drawItem):
-            brush.setColor(colour)
-            pen.setColor(colour)
-            drawItem.setBrush(brush)
-            drawItem.setPen(pen)
+            drawItem.setColour(colour)
             self.scene.addItem(drawItem)
 
         addToScene(QtGui.QColor(175, 175, 175, 175), self.timeLine)
         addToScene(QtGui.QColor(0, 0, 0), self.progressMarker)
 
+
     def eventFilter(self, object, event):
-        #handle resize events for the freecad ui
+        ''' handle resize events for the freecad ui '''
         if event.type() == QtCore.QEvent.Type.Resize:
             self.setPosition()
 
@@ -166,11 +175,12 @@ class timeline(QtCore.QObject):
         self.progress = progress
         pos = self.progressMarker.pos()
         position = self.progress * self.progressBarWidth
-        self.progressMarker.setPos(position, pos.y())
+        if self.progressMarker.skipping is False:
+            self.progressMarker.setPos(position, pos.y())
 
-    def progressUpdate(self, progress):
+    def progressUpdate(self, position):
         ''' handle progress changes from the progress marker position '''
-        percent_progress = progress / self.progressBarWidth
+        percent_progress = position / self.progressBarWidth
         if self.progress * 0.05 > percent_progress or self.progress * 0.05 < percent_progress:
             self.progress = percent_progress
             # print("progress Update:", progress, "=", round(self.progress * 100, 2), "%")
@@ -193,28 +203,24 @@ class timeline(QtCore.QObject):
         self.setProgress(self.progress)
 
     def play(self):
+        ''' handle play signals '''
+        self.progress = 0
         self.playSignal.emit()
 
     def stop(self):
+        ''' handle stop signals '''
         self.stopSignal.emit()
 
-    def skip(self):
-        self.skipRequested.emit(self.progress)
+    def skip(self, position):
+        ''' handle skip signals '''
+        progress = position / self.progressBarWidth
+        self.skipRequested.emit(progress)
 
     def show(self):
+        ''' show the player controls '''
         self.form.show()
 
-    def reject(self):
-        FreeCAD.Console.PrintMessage("Reject Signal")
-        self.quit()
-
-    def accept(self):
-        self.quit()
-
     def quit(self, data=None):
-        # self.quitSignal.emit()
+        ''' handle the form being closed'''
         self.form.close()
         self.deleteLater()
-
-    def reset(self):
-        pass

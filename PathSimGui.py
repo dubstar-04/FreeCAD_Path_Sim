@@ -22,17 +22,13 @@
 # *                                                                         *
 # ***************************************************************************
 
-import FreeCAD
-import FreeCADGui
-import Draft
-import Mesh
-
 import os 
-import math
-import pkgutil
 
 from PySide import QtGui, QtCore
-from PySide.QtGui import QTreeWidgetItem
+
+import FreeCAD
+import FreeCADGui
+import Mesh
 
 import PathScripts.PathUtil as PathUtil
 
