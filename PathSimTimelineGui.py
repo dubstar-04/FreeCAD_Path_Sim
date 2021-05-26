@@ -34,31 +34,7 @@ path_to_ui = dir + "/" + ui_name
 
 mw = FreeCADGui.getMainWindow()
 
-'''
-class ProgressMarker(QtGui.QGraphicsRectItem):
 
-    def __init__(self, w, h, maxX):
-        super().__init__(0, 0, w, h)
-        self.setFlag(QtGui.QGraphicsItem.ItemIsMovable, True)
-        self.maxX = maxX - w
-        self.setFlag(QtGui.QGraphicsItem.ItemSendsGeometryChanges, True)
-
-    def itemChange(self, change, value):
-        if change == QtGui.QGraphicsItem.ItemPositionChange:
-            x = value.x()
-
-            if x < 0:
-                x = 0
-
-            if x > self.maxX:
-                x = self.maxX
-
-            return QtCore.QPointF(x, self.y())
-        return value
-'''
-
-
-class ProgressMarker(QtGui.QGraphicsObject):
     ''' graphics item to represent the progress marker on the timeline '''
 
     progresschange = QtCore.Signal(int)
@@ -229,17 +205,7 @@ class timeline(QtCore.QObject):
     def show(self):
         self.form.show()
 
-    def reject(self):
-        FreeCAD.Console.PrintMessage("Reject Signal")
-        self.quit()
-
-    def accept(self):
-        self.quit()
-
     def quit(self, data=None):
-        # self.quitSignal.emit()
+        ''' handle the form being closed'''
         self.form.close()
         self.deleteLater()
-
-    def reset(self):
-        pass
