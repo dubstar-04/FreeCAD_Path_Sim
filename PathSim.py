@@ -22,13 +22,14 @@
 # *                                                                         *
 # ***************************************************************************
 
-import FreeCAD, FreeCADGui
-import Mesh
 import math
 import time
 import importlib
 
 from PySide import QtCore, QtGui
+
+import FreeCAD
+import Mesh
 
 import engines
 
@@ -78,6 +79,7 @@ class PathSim (QtCore.QThread):
 			print("engine not set")
 			return
 
+		self.idx = 0  # reset the progress to 0
 		self.running = True
 		job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
 		stock = job.Stock
@@ -87,7 +89,7 @@ class PathSim (QtCore.QThread):
 		rot = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 0)
 		op = ""
 
-		for self.idx in range(len(self.pathPoints)):
+		while self.idx < len(self.pathPoints):
 
 			if not self.running:
 				print("QUITING THREAD")
@@ -114,21 +116,15 @@ class PathSim (QtCore.QThread):
 				self.updateMesh.emit(mesh)
 
 			self.progress.emit(self.idx / len(self.pathPoints))
-
+			self.idx += 1
 
 		# emit complete signal
 		self.complete.emit()
 	
 	def skipTo(self, progress):
-		print("PathSim.Jump:", progress)
-		self.idx = progress * len(self.pathPoints)
-		print("PathSim.Jump: new pos", self.idx, "of", len(self.pathPoints))
-
-	'''
-	def calculateDistance(self, currentPos, pos):
-		distance = math.sqrt(pow((pos.x - currentPos.x), 2) + pow((pos.y - currentPos.y), 2) + pow((pos.z - currentPos.z), 2))
-		return distance
-	'''
+		''' skip the the selected point: progress is a percentage where 1 = 100% '''
+		self.idx = int(progress * len(self.pathPoints))
+		# print("PathSim.Jump: new pos", self.idx, "of", len(self.pathPoints))
 
 	def updateToolPosition(self, pos, rot):
 		self.updatePos.emit(FreeCAD.Placement(pos, rot))
