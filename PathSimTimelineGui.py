@@ -1,4 +1,3 @@
-import FreeCAD,FreeCADGui
 # -*- coding: utf-8 -*-
 
 # ***************************************************************************
@@ -24,8 +23,10 @@ import FreeCAD,FreeCADGui
 # ***************************************************************************
 
 import os
+
 from PySide import QtGui, QtCore
-from PySide.QtGui import QApplication, QDialog, QMainWindow
+
+import FreeCADGui
 
 dir = os.path.dirname(__file__)
 ui_name = "PathSimTimelineGui.ui"
