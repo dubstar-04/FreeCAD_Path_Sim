@@ -30,7 +30,7 @@ import FreeCAD
 import FreeCADGui
 import Mesh
 
-import PathScripts.PathUtil as PathUtil
+import Path.Base.Util as PathUtil
 
 import PathSim
 import PathSimTimelineGui
