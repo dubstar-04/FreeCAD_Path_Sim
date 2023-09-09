@@ -38,13 +38,13 @@ def getIcon(iconName):
 
 def getAction(mw, name):
     """Get a QAction to show the addon icon and launch the form"""
-    FeedsAndSpeedsAction = QtGui.QAction(mw)
-    FeedsAndSpeedsAction.setObjectName(name)
-    FeedsAndSpeedsAction.setIconText("Path Simulator Next")
-    FeedsAndSpeedsAction.setStatusTip("Simulate CNC Toolpath")
-    FeedsAndSpeedsAction.setIcon(QtGui.QPixmap(getIcon('Path_Sim.svg')))
-    FeedsAndSpeedsAction.triggered.connect(PathSimGui.Show)
-    return FeedsAndSpeedsAction
+    AddonAction = QtGui.QAction(mw)
+    AddonAction.setObjectName(name)
+    AddonAction.setIconText("Path Simulator Next")
+    AddonAction.setStatusTip("Simulate CNC Toolpath")
+    AddonAction.setIcon(QtGui.QPixmap(getIcon('Path_Sim.svg')))
+    AddonAction.triggered.connect(PathSimGui.Show)
+    return AddonAction
 
 
 def updateMenu(workbench):
