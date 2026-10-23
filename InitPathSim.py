@@ -43,7 +43,13 @@ def updateMenu(workbench):
         mw = FreeCADGui.getMainWindow()
         addonMenu = None
 
-        camMenu = mw.findChild(QtGui.QMenu, "&CAM")
+        camMenu = None
+        # Detached menus remain as children after a workbench switch.
+        activeActions = mw.menuBar().actions()
+        for menu in mw.findChildren(QtGui.QMenu, "&CAM"):
+            if menu.menuAction() in activeActions:
+                camMenu = menu
+                break
         if camMenu is None:
             FreeCAD.Console.PrintError("Path Simulator: CAM menu not found.\n")
             return
