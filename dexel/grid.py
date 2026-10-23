@@ -16,19 +16,26 @@ from array import array
 
 
 class DexelGrid:
-    def __init__(self, bounds, resolution, max_columns=2000000):
+    def __init__(self, bounds, resolution, max_columns=2000000, tolerance=1e-4):
         """Create a solid block.
 
         ``bounds`` is ``(xmin, ymin, zmin, xmax, ymax, zmax)``. ``resolution`` is
         the largest allowed column size in X and Y; the actual sizes are chosen
-        so the grid exactly spans the bounds.
+        so the grid exactly spans the bounds. Heights closer than ``tolerance``
+        are treated as equal: cuts that only skim a surface change nothing, no
+        material thinner than the tolerance is kept, and no wall shorter than it
+        is generated. This keeps floating-point noise in tool paths from
+        producing slivers that mesh libraries then discard.
         """
         xmin, ymin, zmin, xmax, ymax, zmax = (float(v) for v in bounds)
         if resolution <= 0:
             raise ValueError("resolution must be positive")
+        if tolerance <= 0:
+            raise ValueError("tolerance must be positive")
         if xmax <= xmin or ymax <= ymin or zmax <= zmin:
             raise ValueError("bounds must have a positive size on every axis")
 
+        self.tolerance = float(tolerance)
         self.nx = max(1, int(math.ceil((xmax - xmin) / resolution - 1e-9)))
         self.ny = max(1, int(math.ceil((ymax - ymin) / resolution - 1e-9)))
         if self.nx * self.ny > max_columns:
@@ -113,6 +120,7 @@ class DexelGrid:
         multi = self.multi
         dirty = self._dirty
         xmin, ymin = self.xmin, self.ymin
+        tol = self.tolerance
         changed = 0
 
         for j in range(j0, j1 + 1):
@@ -150,10 +158,10 @@ class DexelGrid:
 
                 low = lo[c]
                 high = hi[c]
-                if high <= low or high <= bottom or low >= top:
+                if high - low <= tol or high - bottom <= tol or top - low <= tol:
                     continue
-                if bottom > low:
-                    if top < high:
+                if bottom - low > tol:
+                    if high - top > tol:
                         multi[c] = [
                             [low, bottom, lo_id[c], tool_id],
                             [top, high, tool_id, hi_id[c]],
@@ -161,7 +169,7 @@ class DexelGrid:
                     else:
                         hi[c] = bottom
                         hi_id[c] = tool_id
-                elif top < high:
+                elif high - top > tol:
                     lo[c] = top
                     lo_id[c] = tool_id
                 else:
@@ -177,16 +185,17 @@ class DexelGrid:
         return changed
 
     def _cut_multi(self, c, bottom, top, tool_id):
+        tol = self.tolerance
         changed = False
         result = []
         for low, high, low_id, high_id in self.multi[c]:
-            if high <= bottom or low >= top:
+            if high - bottom <= tol or top - low <= tol:
                 result.append([low, high, low_id, high_id])
                 continue
             changed = True
-            if bottom > low:
+            if bottom - low > tol:
                 result.append([low, bottom, low_id, tool_id])
-            if top < high:
+            if high - top > tol:
                 result.append([top, high, tool_id, high_id])
         if changed:
             if len(result) >= 2:
@@ -274,6 +283,7 @@ class DexelGrid:
     def _build_row(self, j):
         nx, ny = self.nx, self.ny
         dx, dy = self.dx, self.dy
+        tol = self.tolerance
         xmin = self.xmin
         y0 = self.ymin + j * dy
         y1 = y0 + dy
@@ -299,6 +309,11 @@ class DexelGrid:
         # Top and bottom faces, merging neighbouring columns with equal heights.
         run_top = None
         run_bottom = None
+
+        def continues(run, key):
+            return (key is not None and run[1][1] == key[1]
+                    and abs(run[1][0] - key[0]) <= tol)
+
         for i in range(nx + 1):
             c = base + i
             if i < nx and c not in multi:
@@ -311,13 +326,13 @@ class DexelGrid:
             else:
                 top_key = bottom_key = None
 
-            if run_top is not None and run_top[1] != top_key:
+            if run_top is not None and not continues(run_top, top_key):
                 horizontal(run_top[0], i, run_top[1][0], run_top[1][1], True)
                 run_top = None
             if run_top is None and top_key is not None:
                 run_top = (i, top_key)
 
-            if run_bottom is not None and run_bottom[1] != bottom_key:
+            if run_bottom is not None and not continues(run_bottom, bottom_key):
                 horizontal(run_bottom[0], i, run_bottom[1][0], run_bottom[1][1], False)
                 run_bottom = None
             if run_bottom is None and bottom_key is not None:
@@ -329,6 +344,8 @@ class DexelGrid:
                     horizontal(i, i + 1, low, low_id, False)
 
         def wall_x(xw, z0, z1, positive, tool_id):
+            if z1 - z0 <= tol:
+                return
             if positive:
                 tris.append((xw, y0, z0, xw, y1, z0, xw, y1, z1))
                 tris.append((xw, y0, z0, xw, y1, z1, xw, y0, z1))
@@ -339,6 +356,8 @@ class DexelGrid:
             ids.append(tool_id)
 
         def wall_y(yw, i, z0, z1, positive, tool_id):
+            if z1 - z0 <= tol:
+                return
             xa = xmin + i * dx
             xb = xa + dx
             if positive:
@@ -357,7 +376,7 @@ class DexelGrid:
             a = base + i if i >= 0 else -1
             b = base + i + 1 if i + 1 < nx else -1
             if (a >= 0 and b >= 0 and a not in multi and b not in multi
-                    and lo[a] == lo[b] and hi[a] == hi[b]):
+                    and abs(lo[a] - lo[b]) <= tol and abs(hi[a] - hi[b]) <= tol):
                 continue
             first = self._intervals(a) if a >= 0 else ()
             second = self._intervals(b) if b >= 0 else ()
@@ -381,7 +400,7 @@ class DexelGrid:
             a = base + i
             b = base + nx + i if j + 1 < ny else -1
             if (b >= 0 and a not in multi and b not in multi
-                    and lo[a] == lo[b] and hi[a] == hi[b]):
+                    and abs(lo[a] - lo[b]) <= tol and abs(hi[a] - hi[b]) <= tol):
                 continue
             first = self._intervals(a)
             second = self._intervals(b) if b >= 0 else ()
