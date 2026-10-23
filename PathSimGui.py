@@ -41,17 +41,17 @@ ui_name = "PathSimGui.ui"
 path_to_ui = dir + os.sep + ui_name
 path_to_engines = dir + os.sep + "engines"
 
-# face colours by tool id: id 0 is untouched stock, tool ids start at 1 and cycle
+# Operation ids start at 1; id 0 is untouched stock. Red is reserved for errors.
 STOCK_COLOUR = (0.70, 0.72, 0.74)
-TOOL_COLOURS = [
-	(0.90, 0.30, 0.25),
+OPERATION_COLOURS = [
 	(0.20, 0.55, 0.90),
 	(0.95, 0.75, 0.20),
 	(0.35, 0.75, 0.40),
 	(0.65, 0.40, 0.85),
 	(0.95, 0.55, 0.15),
 	(0.20, 0.75, 0.75),
-	(0.85, 0.40, 0.65),
+	(0.25, 0.30, 0.65),
+	(0.65, 0.80, 0.25),
 ]
 
 class PathSimPanel:
@@ -133,7 +133,10 @@ class PathSimPanel:
 		self.operations = []
 		for op in j.Operations.OutList:
 			if PathUtil.opProperty(op, 'Active'):
-				listItem = QtGui.QListWidgetItem(op.ViewObject.Icon, op.Label)
+				colour = OPERATION_COLOURS[len(self.operations) % len(OPERATION_COLOURS)]
+				swatch = QtGui.QPixmap(16, 16)
+				swatch.fill(QtGui.QColor.fromRgbF(*colour))
+				listItem = QtGui.QListWidgetItem(QtGui.QIcon(swatch), op.Label)
 				listItem.setFlags(listItem.flags() | QtCore.Qt.ItemIsUserCheckable)
 				listItem.setCheckState(QtCore.Qt.CheckState.Checked)
 				self.operations.append(op)
@@ -166,7 +169,8 @@ class PathSimPanel:
 		self.meshView.Mesh = Mesh.Mesh(job.Stock.Shape.tessellate(0.1))
 
 		self.sim.setupEngine(self.form.comboEngines.currentText())
-		self.sim.setOperations(operations)
+		operationIds = {op.Name: index + 1 for index, op in enumerate(self.operations)}
+		self.sim.setOperations(operations, operationIds)
 		self.sim.start()
 	
 	def loadTool(self, op):
@@ -213,7 +217,7 @@ class PathSimPanel:
 		if frame is not None:
 			self.updateMesh(*frame)
 
-	def updateMesh(self, mesh, faceToolIds=None):
+	def updateMesh(self, mesh, faceOperationIds=None):
 		''' update the meshView '''
 		if self.meshView is None:
 			return
@@ -224,7 +228,7 @@ class PathSimPanel:
 		FreeCAD.ActiveDocument.recompute()
 		recomputed = time.perf_counter()
 		# recompute resets the view's materials, so colours are applied after it
-		self.applyFaceColours(mesh, faceToolIds)
+		self.applyFaceColours(mesh, faceOperationIds)
 		finished = time.perf_counter()
 
 		self.meshesShown += 1
@@ -252,27 +256,27 @@ class PathSimPanel:
 				assign * 1000 / shown, recompute * 1000 / shown, colour * 1000 / shown))
 		self._resetMeshTiming()
 
-	def applyFaceColours(self, mesh, faceToolIds):
-		''' colour each face by the tool that cut it. faceToolIds has one id per face '''
-		if faceToolIds is None:
+	def applyFaceColours(self, mesh, faceOperationIds):
+		''' colour each face by the last operation that cut it '''
+		if faceOperationIds is None:
 			return
 
-		if len(faceToolIds) != mesh.CountFacets:
+		if len(faceOperationIds) != mesh.CountFacets:
 			if not self.colourWarned:
 				self.colourWarned = True
 				FreeCAD.Console.PrintWarning(
-					"PathSim: {} tool ids for {} faces, colouring skipped\n".format(
-						len(faceToolIds), mesh.CountFacets))
+					"PathSim: {} operation ids for {} faces, colouring skipped\n".format(
+						len(faceOperationIds), mesh.CountFacets))
 			return
 
 		if "FaceColors" not in self.meshView.PropertiesList:
 			self.meshView.addProperty("App::PropertyColorList", "FaceColors", "PathSim")
 
 		palette = [STOCK_COLOUR] + [
-			TOOL_COLOURS[(toolId - 1) % len(TOOL_COLOURS)]
-			for toolId in range(1, max(faceToolIds, default=0) + 1)
+			OPERATION_COLOURS[(operationId - 1) % len(OPERATION_COLOURS)]
+			for operationId in range(1, max(faceOperationIds, default=0) + 1)
 		]
-		self.meshView.FaceColors = [palette[toolId] for toolId in faceToolIds]
+		self.meshView.FaceColors = [palette[operationId] for operationId in faceOperationIds]
 
 		# the mesh was replaced, so the view needs to apply the colours again
 		view = self.meshView.ViewObject

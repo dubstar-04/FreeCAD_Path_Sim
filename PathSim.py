@@ -52,6 +52,7 @@ class PathSim (QtCore.QThread):
 	def __init__(self):
 		QtCore.QThread.__init__(self)
 		self.operations = []
+		self.operationIds = {}
 		self.stepDistance = 2
 		# self.skippedDistance = 0
 		self.running = False
@@ -78,8 +79,11 @@ class PathSim (QtCore.QThread):
 			msgBox.setText("An error occoured while importing {}".format(importstring))
 			msgBox.exec_()
 
-	def setOperations(self, operations):
+	def setOperations(self, operations, operationIds=None):
 		self.operations = operations
+		self.operationIds = (
+			{op.Name: index + 1 for index, op in enumerate(operations)}
+			if operationIds is None else dict(operationIds))
 
 	def stop(self):
 		self.running = False
@@ -124,6 +128,9 @@ class PathSim (QtCore.QThread):
 				op = operation
 				tool = operation.ToolController.Tool
 				self.engine.setTool(tool.Shape)
+				setOperation = getattr(self.engine, "setOperation", None)
+				if setOperation is not None:
+					setOperation(self.operationIds[operation.Name])
 				self.changedOp.emit(operation)
 				lastDisplay = 0.0  # show the tool at its first position straight away
 
@@ -160,12 +167,12 @@ class PathSim (QtCore.QThread):
 		self.complete.emit()
 	
 	def publishMesh(self):
-		''' make the engine mesh available to the display, with the tool id of each face if
+		''' make the engine mesh available to the display, with the operation id of each face if
 		the engine tracks it. Only the newest mesh is kept, so a slow display skips meshes
-		instead of building up a backlog. Engines must replace faceToolIds for each mesh,
+		instead of building up a backlog. Engines must replace faceOperationIds for each mesh,
 		not modify it, so the list is safe to hand to the gui thread.'''
 		mesh = self.engine.getMesh()
-		frame = (mesh, getattr(self.engine, "faceToolIds", None))
+		frame = (mesh, getattr(self.engine, "faceOperationIds", None))
 		with self._meshLock:
 			self._latestMesh = frame
 			self.meshesPublished += 1
@@ -175,7 +182,7 @@ class PathSim (QtCore.QThread):
 			self.meshReady.emit()
 
 	def takeMesh(self):
-		''' return the newest (mesh, faceToolIds) not yet displayed, or None '''
+		''' return the newest (mesh, faceOperationIds) not yet displayed, or None '''
 		with self._meshLock:
 			frame = self._latestMesh
 			self._latestMesh = None

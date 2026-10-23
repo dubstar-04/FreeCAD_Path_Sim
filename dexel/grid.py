@@ -67,8 +67,8 @@ class DexelGrid:
         """Remove the volume swept by ``tool`` moving from ``start`` to ``end``.
 
         Points are ``(x, y, z)`` of the tool origin. ``tool_id`` (1-65535) is
-        recorded on the surfaces this cut creates. Returns the number of columns
-        that changed.
+        recorded on the surfaces this cut creates; callers can use operation IDs
+        instead of tool IDs. Returns the number of columns that changed.
         """
         if not 0 < tool_id < 65536:
             raise ValueError("tool_id must be between 1 and 65535")

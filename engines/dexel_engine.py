@@ -44,9 +44,8 @@ class Engine:
 	def __init__(self):
 		self.grid = None
 		self.tool = None
-		self.toolId = 0
-		self.toolIds = {}  # tool id -> operation label, available for colouring
-		self.faceToolIds = []  # tool id for each triangle of the last mesh; replaced, never modified
+		self.operationId = 0
+		self.faceOperationIds = []  # replaced for each mesh, never modified
 		self.resolution = None  # model units; None chooses it from the stock size
 		self.targetColumns = 100000
 		self.toolTessellation = 0.1
@@ -84,9 +83,8 @@ class Engine:
 		self.grid = dexel.DexelGrid(
 			(box.XMin, box.YMin, box.ZMin, box.XMax, box.YMax, box.ZMax), resolution)
 		self.tool = None
-		self.toolId = 0
-		self.toolIds = {}
-		self.faceToolIds = []
+		self.operationId = 0
+		self.faceOperationIds = []
 		self._lastPosition = None
 		self._resetPerformance()
 		FreeCAD.Console.PrintMessage(
@@ -101,24 +99,28 @@ class Engine:
 		points = [(p.x, p.y, p.z) for p in tool.tessellate(self.toolTessellation)[0]]
 		binWidth = 0.5 * min(self.grid.dx, self.grid.dy) if self.grid else 0.05
 		self.tool = dexel.RevolvedTool.from_points(points, binWidth)
-		self.toolId += 1
-		self.toolIds[self.toolId] = getattr(tool, "Label", "tool {}".format(self.toolId))
 		self._lastPosition = None
 		FreeCAD.Console.PrintMessage(
-			"[PathSim dexel] tool {}: radius {:.3f}, length {:.3f}, {}\n".format(
-				self.toolId, self.tool.radius, self.tool.top,
+			"[PathSim dexel] tool: radius {:.3f}, length {:.3f}, {}\n".format(
+				self.tool.radius, self.tool.top,
 				"flat" if self.tool.is_flat else "profiled"))
+
+	def setOperation(self, operationId):
+		if not 0 < operationId < 65536:
+			raise ValueError("Operation id must be between 1 and 65535")
+		self.operationId = operationId
+		self._lastPosition = None
 
 	def processPosition(self, placement):
 		''' process the new tool position. placement is a freecad placement object'''
-		if self.grid is None or self.tool is None:
-			raise RuntimeError("The dexel engine needs a stock and a tool before cutting")
+		if self.grid is None or self.tool is None or not self.operationId:
+			raise RuntimeError("The dexel engine needs a stock, tool and operation before cutting")
 
 		base = placement.Base
 		position = (base.x, base.y, base.z)
 		start = time.perf_counter()
 		self._columnsChanged += self.grid.cut_segment(
-			self.tool, self.toolId, self._lastPosition or position, position)
+			self.tool, self.operationId, self._lastPosition or position, position)
 		self._cutTime += time.perf_counter() - start
 		self._lastPosition = position
 		self._cuts += 1
@@ -129,7 +131,7 @@ class Engine:
 	def getMesh(self):
 		''' return the cut shape as a freecad Mesh object'''
 		start = time.perf_counter()
-		triangles, self.faceToolIds = self.grid.extract()
+		triangles, self.faceOperationIds = self.grid.extract()
 		extracted = time.perf_counter()
 		mesh = Mesh.Mesh(triangles)
 		finished = time.perf_counter()
