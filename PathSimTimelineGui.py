@@ -283,6 +283,7 @@ class timeline(QtCore.QObject):
     def skip(self, position):
         ''' handle skip signals '''
         progress = max(0.0, min(1.0, position / self.progressBarWidth))
+        self.setProgress(progress)
         self.skipRequested.emit(progress)
 
     def show(self):

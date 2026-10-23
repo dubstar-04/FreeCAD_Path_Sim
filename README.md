@@ -24,10 +24,26 @@ run on a machine.
 5. Select the operations and engine in the task panel, then use **Play** in the
    viewport timeline to start the simulation. **Stop** stops playback.
 
+## Timeline seeking
+Click the timeline or drag its marker to reconstruct the stock at that position.
+The marker moves immediately; the stock and tool update when reconstruction is
+finished, without displaying intermediate cuts. Seeking preserves the current
+play/pause state. A new seek replaces any pending destination.
+
+Backward seeks rebuild from the starting stock, so long paths can still take
+time to reconstruct.
+
 The dexel engine batches straight turning cuts within each motion command.
 Playback timing and timeline positions are unchanged; stock updates and seeks
 include the exact partial move at the current sampled position. Stock resolution
 and mesh generation are unchanged.
+
+## Tests
+Run the headless worker regression checks (no FreeCAD installation required):
+
+```sh
+python3 -B -m unittest discover -s tests -v
+```
 
 ## Feedback  
 If you have feedback or need to report bugs please participate on the related [Path Forum](https://forum.freecadweb.org/viewforum.php?f=15). 

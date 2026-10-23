@@ -78,6 +78,7 @@ class PathSim (QtCore.QThread):
 		self._stateLock = threading.Lock()
 		self._wake = threading.Event()
 		self._seekTarget = None
+		self._seekSerial = 0
 		self.initialised = False
 		self._stock = None
 		self._operation = None
@@ -134,6 +135,7 @@ class PathSim (QtCore.QThread):
 		with self._stateLock:
 			self.running = False
 			self._seekTarget = None
+			self._seekSerial += 1
 			self._wake.set()
 
 	def needsWork(self):
@@ -181,6 +183,7 @@ class PathSim (QtCore.QThread):
 			with self._stateLock:
 				self._wake.clear()
 				target = self._seekTarget
+				seekSerial = self._seekSerial
 				playing = self.running
 
 			if target is not None and target < self.idx:
@@ -191,14 +194,16 @@ class PathSim (QtCore.QThread):
 				meshPending = True
 
 			if target is not None and target == self.idx:
-				self.publishMesh()
-				self.showCurrentPosition(rot)
+				if not self.publishMesh(seekSerial):
+					continue
 				meshPending = False
+				with self._stateLock:
+					if self._seekSerial != seekSerial:
+						continue
+					self._seekTarget = None
+				self.showCurrentPosition(rot)
 				lastMesh = time.perf_counter()
 				playbackDeadline = lastMesh
-				with self._stateLock:
-					if self._seekTarget == target:
-						self._seekTarget = None
 				continue
 
 			if not playing and target is None:
@@ -219,7 +224,7 @@ class PathSim (QtCore.QThread):
 			pos = pntData[0]
 			operation = pntData[1]
 			if self._operation is not operation:
-				self.loadOperation(operation)
+				self.loadOperation(operation, notify=target is None)
 				lastDisplay = 0.0
 
 			duration = 0.0
@@ -245,6 +250,13 @@ class PathSim (QtCore.QThread):
 			self.idx += 1
 			meshPending = True
 
+			# Reconstruct all cuts without rendering the path to the seek target.
+			if target is not None:
+				continue
+			with self._stateLock:
+				if self._seekSerial != seekSerial:
+					continue
+
 			if iterationStart - lastDisplay >= self.displayInterval:
 				lastDisplay = iterationStart
 				self.updateToolPosition(pos, rot)
@@ -265,7 +277,10 @@ class PathSim (QtCore.QThread):
 
 		if meshPending:
 			self.publishMesh()
-		self.showCurrentPosition(rot)
+		with self._stateLock:
+			seeking = self._seekTarget is not None
+		if not seeking:
+			self.showCurrentPosition(rot)
 
 		reportPerformance = getattr(self.engine, "reportPerformance", None)
 		if reportPerformance is not None:
@@ -274,7 +289,7 @@ class PathSim (QtCore.QThread):
 		if completed:
 			self.complete.emit()
 
-	def loadOperation(self, operation):
+	def loadOperation(self, operation, notify=True):
 		if self._operation is operation:
 			return
 		self.flushPendingCut()
@@ -290,7 +305,8 @@ class PathSim (QtCore.QThread):
 			setOperation(self.operationIds[operation.Name])
 		self._operation = operation
 		self._speeds = self.operationSpeeds(operation)
-		self.changedOp.emit(operation)
+		if notify:
+			self.changedOp.emit(operation)
 
 	def operationSpeeds(self, operation):
 		controller = operation.ToolController
@@ -350,21 +366,32 @@ class PathSim (QtCore.QThread):
 			self.engine.processPosition(self._pendingCut)
 			self._pendingCut = None
 
-	def publishMesh(self):
+	def publishMesh(self, seekSerial=None):
 		''' make the engine mesh available to the display, with the operation id of each face if
 		the engine tracks it. Only the newest mesh is kept, so a slow display skips meshes
 		instead of building up a backlog. Engines must replace faceOperationIds for each mesh,
 		not modify it, so the list is safe to hand to the gui thread.'''
+		with self._stateLock:
+			if seekSerial is None:
+				if self._seekTarget is not None:
+					return False
+				seekSerial = self._seekSerial
+			elif seekSerial != self._seekSerial:
+				return False
 		self.flushPendingCut()
 		mesh = self.engine.getMesh()
 		frame = (mesh, getattr(self.engine, "faceOperationIds", None))
-		with self._meshLock:
-			self._latestMesh = frame
-			self.meshesPublished += 1
-			notify = not self._meshSignalled
-			self._meshSignalled = True
+		with self._stateLock:
+			if seekSerial != self._seekSerial:
+				return False
+			with self._meshLock:
+				self._latestMesh = frame
+				self.meshesPublished += 1
+				notify = not self._meshSignalled
+				self._meshSignalled = True
 		if notify:
 			self.meshReady.emit()
+		return True
 
 	def takeMesh(self):
 		''' return the newest (mesh, faceOperationIds) not yet displayed, or None '''
@@ -380,6 +407,9 @@ class PathSim (QtCore.QThread):
 			raise ValueError("Seek progress must be finite")
 		with self._stateLock:
 			self._seekTarget = int(max(0.0, min(1.0, progress)) * len(self.pathPoints))
+			self._seekSerial += 1
+			with self._meshLock:
+				self._latestMesh = None
 			self._wake.set()
 
 	def updateToolPosition(self, pos, rot):
