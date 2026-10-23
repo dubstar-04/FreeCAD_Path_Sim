@@ -27,16 +27,39 @@ import time
 
 import FreeCAD
 import Mesh
+import Part
 
 import dexel
+
+
+def _cylinderRadius(stock):
+	''' recognise a complete cylinder parallel to Z, not a bore or partial cylinder '''
+	if len(stock.Solids) != 1 or len(stock.Faces) != 3:
+		return None
+	cylinders = [face.Surface for face in stock.Faces if isinstance(face.Surface, Part.Cylinder)]
+	planes = [face.Surface for face in stock.Faces if isinstance(face.Surface, Part.Plane)]
+	if len(cylinders) != 1 or len(planes) != 2:
+		return None
+	cylinder = cylinders[0]
+	if math.hypot(cylinder.Axis.x, cylinder.Axis.y) > 1e-8:
+		return None
+	box = stock.BoundBox
+	radius = cylinder.Radius
+	if (not math.isclose(box.XLength, 2 * radius, rel_tol=1e-7, abs_tol=1e-6)
+			or not math.isclose(box.YLength, 2 * radius, rel_tol=1e-7, abs_tol=1e-6)
+			or not math.isclose(stock.Volume, math.pi * radius ** 2 * box.ZLength,
+				rel_tol=1e-7, abs_tol=1e-6)):
+		return None
+	return radius
 
 
 class Engine:
 	''' Material removal using the standalone dexel library.
 
 	This adapter only converts between FreeCAD objects and the library: the stock
-	becomes a dexel grid from its bounding box, each tool becomes a revolved
-	profile, and the surface is returned as a FreeCAD mesh. Tool positions are
+	becomes a box or Z-aligned cylinder grid. Milling tools become revolved
+	profiles; turning tools use their convex XZ insert section. The surface is
+	returned as a FreeCAD mesh. Tool positions are
 	cut as segments from the previous position so material between the sampled
 	positions is removed too.
 	'''
@@ -50,6 +73,8 @@ class Engine:
 		self.targetColumns = 100000
 		self.toolTessellation = 0.1
 		self._lastPosition = None
+		self._spindleAxis = None
+		self._turning = False
 		self._resetPerformance()
 
 	def _resetPerformance(self):
@@ -72,16 +97,28 @@ class Engine:
 			raise ValueError("Stock has no volume")
 
 		boxVolume = box.XLength * box.YLength * box.ZLength
-		if abs(stock.Volume - boxVolume) > 0.01 * boxVolume:
-			FreeCAD.Console.PrintWarning(
-				"[PathSim dexel] Stock is not a box; its bounding box will be used.\n")
-
 		resolution = self.resolution
 		if resolution is None:
 			resolution = max(0.01, math.sqrt(box.XLength * box.YLength / self.targetColumns))
 
-		self.grid = dexel.DexelGrid(
-			(box.XMin, box.YMin, box.ZMin, box.XMax, box.YMax, box.ZMax), resolution)
+		radius = _cylinderRadius(stock)
+		self._spindleAxis = None
+		self._turning = False
+		if radius is not None:
+			self._spindleAxis = ((box.XMin + box.XMax) / 2, (box.YMin + box.YMax) / 2)
+			self.grid = dexel.DexelGrid.cylinder(
+				radius, box.ZLength, resolution,
+				origin=((box.XMin + box.XMax) / 2, (box.YMin + box.YMax) / 2, box.ZMin))
+			FreeCAD.Console.PrintMessage(
+				"[PathSim dexel] cylindrical stock: radius {:.3f}, height {:.3f}\n".format(
+					radius, box.ZLength))
+		else:
+			if abs(stock.Volume - boxVolume) > 0.01 * boxVolume:
+				FreeCAD.Console.PrintWarning(
+					"[PathSim dexel] Stock is not a box or Z-aligned cylinder; "
+					"its bounding box will be used.\n")
+			self.grid = dexel.DexelGrid(
+				(box.XMin, box.YMin, box.ZMin, box.XMax, box.YMax, box.ZMax), resolution)
 		self.tool = None
 		self.operationId = 0
 		self.faceOperationIds = []
@@ -99,11 +136,29 @@ class Engine:
 		points = [(p.x, p.y, p.z) for p in tool.tessellate(self.toolTessellation)[0]]
 		binWidth = 0.5 * min(self.grid.dx, self.grid.dy) if self.grid else 0.05
 		self.tool = dexel.RevolvedTool.from_points(points, binWidth)
+		self._turning = False
 		self._lastPosition = None
 		FreeCAD.Console.PrintMessage(
 			"[PathSim dexel] tool: radius {:.3f}, length {:.3f}, {}\n".format(
 				self.tool.radius, self.tool.top,
 				"flat" if self.tool.is_flat else "profiled"))
+
+	def setTurningTool(self, tool):
+		if self._spindleAxis is None:
+			raise ValueError("Turning requires complete cylinder stock with its spindle parallel to Z")
+		if any(abs(value) > 1e-7 for value in self._spindleAxis):
+			raise ValueError("Turning currently requires the spindle on X = Y = 0")
+		wires = tool.slice(FreeCAD.Vector(0, 1, 0), tool.BoundBox.Center.y)
+		if len(wires) != 1 or not wires[0].isClosed():
+			raise ValueError("Turning tool must have one closed insert profile in its XZ section")
+		deflection = min(self.toolTessellation, min(self.grid.dx, self.grid.dy) / 4)
+		points = wires[0].discretize(Deflection=deflection)
+		self.tool = dexel.TurningTool([(point.x, point.z) for point in points])
+		self._turning = True
+		self._lastPosition = None
+		FreeCAD.Console.PrintMessage(
+			"[PathSim dexel] turning insert: {} profile points, deflection {:.3f}\n".format(
+				len(self.tool.profile), deflection))
 
 	def setOperation(self, operationId):
 		if not 0 < operationId < 65536:
@@ -119,8 +174,16 @@ class Engine:
 		base = placement.Base
 		position = (base.x, base.y, base.z)
 		start = time.perf_counter()
-		self._columnsChanged += self.grid.cut_segment(
-			self.tool, self.operationId, self._lastPosition or position, position)
+		if self._turning:
+			if abs(base.y) > 1e-7:
+				raise ValueError("Turning tool positions must be in the XZ plane")
+			position = (base.x, base.z)
+			self._columnsChanged += self.grid.cut_turning(
+				self.tool, self.operationId, self._lastPosition or position, position,
+				axis=self._spindleAxis)
+		else:
+			self._columnsChanged += self.grid.cut_segment(
+				self.tool, self.operationId, self._lastPosition or position, position)
 		self._cutTime += time.perf_counter() - start
 		self._lastPosition = position
 		self._cuts += 1

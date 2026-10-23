@@ -33,6 +33,11 @@ from PySide import QtCore, QtGui
 import FreeCAD
 
 import engines
+from dexel.motion import sample_turning_moves, move_duration
+
+
+def isTurningOperation(operation):
+	return hasattr(operation, "MinDiameter") and hasattr(operation, "MaxDiameter")
 
 class PathSim (QtCore.QThread):
 
@@ -44,8 +49,10 @@ class PathSim (QtCore.QThread):
 	changedOp = QtCore.Signal(object)
 	pathReady = QtCore.Signal(object)
 
-	# seconds taken by each tool position during playback, 0 runs as fast as the engine can
+	# Legacy benchmark override: 0 runs unpaced; otherwise use controller speeds.
 	stepDelay = 0.05
+	previewSpeed = 40.0  # mm/s, used with a warning for zero controller speeds
+	previewSpindleRPM = 1000.0
 	# minimum seconds between meshes sent to the display
 	meshInterval = 0.2
 	# minimum seconds between tool position and progress updates sent to the display
@@ -56,6 +63,7 @@ class PathSim (QtCore.QThread):
 		self.operations = []
 		self.operationIds = {}
 		self.pathPoints = []
+		self.pathRapid = []
 		self.stepDistance = 2
 		# self.skippedDistance = 0
 		self.running = False
@@ -71,6 +79,9 @@ class PathSim (QtCore.QThread):
 		self.initialised = False
 		self._stock = None
 		self._operation = None
+		self._speeds = None
+		self.spindleRPM = 0.0
+		self._speedWarnings = set()
 
 	def setupEngine(self, engine):
 		# from engines import nativeEngine
@@ -103,6 +114,8 @@ class PathSim (QtCore.QThread):
 		self.initialised = False
 		self.idx = 0
 		self._operation = None
+		self._speeds = None
+		self.spindleRPM = 0.0
 		with self._stateLock:
 			self.running = False
 			self._seekTarget = None
@@ -139,6 +152,7 @@ class PathSim (QtCore.QThread):
 			return
 
 		if not self.initialised:
+			self._speedWarnings.clear()
 			with self._meshLock:
 				self._latestMesh = None
 				self._meshSignalled = False
@@ -149,11 +163,14 @@ class PathSim (QtCore.QThread):
 			self.pathPoints = self.discretizePath()
 			self.pathReady.emit(self.getOperationRanges())
 			self.initialised = True
+		elif self._operation is not None:
+			self._speeds = self.operationSpeeds(self._operation)
 		rot = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 0)
 		meshPending = False
 		lastMesh = time.perf_counter()
 		lastDisplay = 0.0
 		completed = False
+		playbackDeadline = time.perf_counter()
 
 		while True:
 			iterationStart = time.perf_counter()
@@ -173,6 +190,7 @@ class PathSim (QtCore.QThread):
 				self.showCurrentPosition(rot)
 				meshPending = False
 				lastMesh = time.perf_counter()
+				playbackDeadline = lastMesh
 				with self._stateLock:
 					if self._seekTarget == target:
 						self._seekTarget = None
@@ -181,6 +199,10 @@ class PathSim (QtCore.QThread):
 			if not playing and target is None:
 				break
 			if self.idx >= len(self.pathPoints):
+				remaining = playbackDeadline - time.perf_counter()
+				if target is None and playing and remaining > 0:
+					self._wake.wait(remaining)
+					continue
 				with self._stateLock:
 					if self._seekTarget is not None:
 						continue
@@ -194,6 +216,18 @@ class PathSim (QtCore.QThread):
 			if self._operation is not operation:
 				self.loadOperation(operation)
 				lastDisplay = 0.0
+
+			duration = 0.0
+			if target is None and self.stepDelay != 0 and self.idx > 0:
+				previous, previousOperation = self.pathPoints[self.idx - 1]
+				if previousOperation is operation:
+					rapid = self.pathRapid[self.idx]
+					horizontal, vertical = (
+						("HorizRapid", "VertRapid") if rapid else ("HorizFeed", "VertFeed"))
+					duration = move_duration(
+						(previous.x, previous.y, previous.z), (pos.x, pos.y, pos.z),
+						self._speeds[horizontal], self._speeds[vertical],
+						rapid=rapid, turning=isTurningOperation(operation))
 
 			self.engine.processPosition(FreeCAD.Placement(pos, rot))
 			self.idx += 1
@@ -210,8 +244,11 @@ class PathSim (QtCore.QThread):
 				meshPending = False
 
 			if target is None:
-				remaining = self.stepDelay - (time.perf_counter() - iterationStart)
-				if remaining > 0:
+				playbackDeadline += duration
+				remaining = playbackDeadline - time.perf_counter()
+				# Batch short moves within one display frame, carrying computation
+				# and meshing time forward instead of adding it to every segment.
+				if remaining >= self.displayInterval:
 					self._wake.wait(remaining)
 
 		if meshPending:
@@ -228,12 +265,46 @@ class PathSim (QtCore.QThread):
 	def loadOperation(self, operation):
 		if self._operation is operation:
 			return
-		self.engine.setTool(operation.ToolController.Tool.Shape)
+		if isTurningOperation(operation):
+			setTool = getattr(self.engine, "setTurningTool", None)
+			if setTool is None:
+				raise RuntimeError("The selected engine does not support turning; select dexel_engine")
+		else:
+			setTool = self.engine.setTool
+		setTool(operation.ToolController.Tool.Shape)
 		setOperation = getattr(self.engine, "setOperation", None)
 		if setOperation is not None:
 			setOperation(self.operationIds[operation.Name])
 		self._operation = operation
+		self._speeds = self.operationSpeeds(operation)
 		self.changedOp.emit(operation)
+
+	def operationSpeeds(self, operation):
+		controller = operation.ToolController
+		label = getattr(controller, "Label", operation.Label)
+		speeds = {}
+		fallbacks = []
+		for name in ("HorizFeed", "VertFeed", "HorizRapid", "VertRapid", "SpindleSpeed"):
+			value = getattr(controller, name, None)
+			value = float(getattr(value, "Value", value)) if value is not None else 0.0
+			if not math.isfinite(value) or value < 0:
+				raise ValueError("{}: {} must be finite and non-negative".format(label, name))
+			if value == 0:
+				value = self.previewSpindleRPM if name == "SpindleSpeed" else self.previewSpeed
+				fallbacks.append("{}={} {}".format(
+					name, value if name == "SpindleSpeed" else value * 60,
+					"RPM" if name == "SpindleSpeed" else "mm/min"))
+			speeds[name] = value
+		if fallbacks:
+			key = (getattr(controller, "Name", label), tuple(fallbacks))
+			if key not in self._speedWarnings:
+				self._speedWarnings.add(key)
+				FreeCAD.Console.PrintWarning(
+					"PathSim: {} has zero or missing speeds; preview fallbacks: {}. "
+					"Set the tool controller/SetupSheet speeds for commanded timing.\n".format(
+						label, ", ".join(fallbacks)))
+		self.spindleRPM = speeds["SpindleSpeed"]
+		return speeds
 
 	def showCurrentPosition(self, rot):
 		if self.pathPoints:
@@ -297,11 +368,22 @@ class PathSim (QtCore.QThread):
 	def discretizePath(self):
 		''' split the path in to discrete points'''
 		pathPoints = []
+		pathRapid = []
 		currentPos = FreeCAD.Vector(0, 0, 0)
 		pos = FreeCAD.Vector(0, 0, 0)
 		centrePos = FreeCAD.Vector()
 		
 		for op in self.operations:
+			if isTurningOperation(op):
+				samples = sample_turning_moves(
+					((command.Name, command.Parameters) for command in op.Path.Commands),
+					self.stepDistance, (currentPos.x, currentPos.y, currentPos.z))
+				pathPoints.extend([FreeCAD.Vector(*point), op] for point, _ in samples)
+				pathRapid.extend(rapid for _, rapid in samples)
+				if samples:
+					currentPos = FreeCAD.Vector(*samples[-1][0])
+					pos = FreeCAD.Vector(*samples[-1][0])
+				continue
 			for command in op.Path.Commands:
 				name = command.Name
 
@@ -359,6 +441,7 @@ class PathSim (QtCore.QThread):
 							segY = centrePos.y + math.sin(angle) * radius
 							segZ = currentPos.z + stepZ * seg
 							pathPoints.append([FreeCAD.Vector(segX, segY, segZ), op])
+							pathRapid.append(False)
 							
 
 						currentPos.x = pos.x
@@ -394,8 +477,10 @@ class PathSim (QtCore.QThread):
 								# print("step ", i, "of", steps, "POS:", pos)
 								pos = currentPos.add(_stepDistance)
 								pathPoints.append([FreeCAD.Vector(pos.x, pos.y, pos.z), op])
+								pathRapid.append(name in ("G0", "G00"))
 								currentPos.x = pos.x
 								currentPos.y = pos.y
 								currentPos.z = pos.z
 								#self.skippedDistance = 0
+		self.pathRapid = pathRapid
 		return pathPoints

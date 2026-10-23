@@ -11,10 +11,18 @@ Typical use::
     tool = RevolvedTool.flat(radius=3.0, length=30.0)
     grid.cut_segment(tool, 1, (10, 10, 12), (40, 10, 12))
     triangles, tool_ids = grid.extract()
+
+For round stock parallel to Z, use ``DexelGrid.cylinder(radius, height,
+resolution, origin=(cx, cy, zmin))``. The cylinder wall follows the grid spacing.
+
+``TurningTool(profile)`` accepts one convex insert outline as local XZ points.
+``grid.cut_turning(tool, operation_id, (x0, z0), (x1, z1))`` removes its straight
+sweep revolved about the spindle. This models continuous stock rotation, not
+individual spindle revolutions or threading.
 """
 
 from .grid import DexelGrid
-from .tools import RevolvedTool
+from .tools import RevolvedTool, TurningTool
 
-__all__ = ["DexelGrid", "RevolvedTool"]
+__all__ = ["DexelGrid", "RevolvedTool", "TurningTool"]
 __version__ = "0.1.0"

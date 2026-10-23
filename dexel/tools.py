@@ -1,7 +1,107 @@
-"""Cutting tools described as a profile revolved about a vertical axis."""
+"""Revolved milling tools and convex XZ turning insert profiles."""
 
 import bisect
 import math
+
+
+def _convex_hull(points):
+    points = sorted(set(points))
+    if len(points) < 3:
+        raise ValueError("A turning profile needs at least three distinct points")
+
+    def cross(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    def half(sequence):
+        result = []
+        for point in sequence:
+            while len(result) >= 2 and cross(result[-2], result[-1], point) <= 0:
+                result.pop()
+            result.append(point)
+        return result
+
+    return half(points)[:-1] + half(reversed(points))[:-1]
+
+
+class TurningTool:
+    """A convex insert cross-section in local (radial X, axial Z) coordinates.
+
+    Sweeping the profile along a straight move and revolving it about the
+    spindle gives the cut volume. Concave or compound profiles are rejected,
+    rather than silently filled by their convex hull.
+    """
+
+    def __init__(self, profile):
+        points = [(float(x), float(z)) for x, z in profile]
+        if not all(math.isfinite(value) for point in points for value in point):
+            raise ValueError("Turning profile coordinates must be finite")
+        if points and points[0] == points[-1]:
+            points.pop()
+        hull = _convex_hull(points)
+
+        def area(polygon):
+            return abs(sum(a[0] * b[1] - b[0] * a[1]
+                           for a, b in zip(polygon, polygon[1:] + polygon[:1]))) / 2
+
+        if area(hull) <= 1e-12:
+            raise ValueError("Turning profile has no area")
+        if not math.isclose(area(points), area(hull), rel_tol=1e-6, abs_tol=1e-8):
+            raise ValueError("Only a single convex turning insert profile is supported")
+        self.profile = hull
+
+    def sweep(self, start, end):
+        """Convex polygon occupied by the insert during a straight XZ move."""
+        positions = [(float(x), float(z)) for x, z in (start, end)]
+        if not all(math.isfinite(value) for point in positions for value in point):
+            raise ValueError("Turning positions must be finite")
+        return _convex_hull([
+            (x + position[0], z + position[1])
+            for position in positions for x, z in self.profile])
+
+    @staticmethod
+    def span(polygon, radius):
+        """Axial interval at a radius, or None outside the swept profile."""
+        heights = []
+        for (x0, z0), (x1, z1) in zip(polygon, polygon[1:] + polygon[:1]):
+            if min(x0, x1) <= radius <= max(x0, x1):
+                if x0 == x1:
+                    heights.extend((z0, z1))
+                else:
+                    heights.append(z0 + (z1 - z0) * (radius - x0) / (x1 - x0))
+        if len(heights) < 2:
+            return None
+        return min(heights), max(heights)
+
+    @staticmethod
+    def spans(polygon, radii):
+        """Slice a convex sweep at increasing radii without rescanning its edges."""
+        right = max(range(len(polygon)), key=lambda i: polygon[i][0])
+        chains = (polygon[:right + 1], polygon[:1] + list(reversed(polygon[right:])))
+        edges = [
+            [(a, b) for a, b in zip(chain, chain[1:]) if a[0] != b[0]]
+            for chain in chains
+        ]
+        indices = [0, 0]
+        for radius in radii:
+            heights = []
+            for side in (0, 1):
+                while (indices[side] + 1 < len(edges[side])
+                       and radius > edges[side][indices[side]][1][0]):
+                    indices[side] += 1
+                (x0, z0), (x1, z1) = edges[side][indices[side]]
+                if side:
+                    x0, z0, x1, z1 = x1, z1, x0, z0
+                heights.append(z0 + (z1 - z0) * (radius - x0) / (x1 - x0))
+                index = indices[side]
+                if (index + 1 < len(edges[side])
+                        and radius == edges[side][index][1][0]):
+                    (x0, z0), (x1, z1) = edges[side][index + 1]
+                    if side:
+                        x0, z0, x1, z1 = x1, z1, x0, z0
+                    heights.append(z0 + (z1 - z0) * (radius - x0) / (x1 - x0))
+            if radius == polygon[0][0] or radius == polygon[right][0]:
+                heights.extend(z for x, z in polygon if x == radius)
+            yield min(heights), max(heights)
 
 
 class RevolvedTool:

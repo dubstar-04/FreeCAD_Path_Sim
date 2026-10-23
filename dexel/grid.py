@@ -13,6 +13,7 @@ last tool that touched the neighbouring column.
 
 import math
 from array import array
+from bisect import bisect_left, bisect_right
 
 
 class DexelGrid:
@@ -60,6 +61,40 @@ class DexelGrid:
 
         self._rows = [None] * self.ny
         self._dirty = set(range(self.ny))
+        self._radial_axis = None
+        self._radial_radii = []
+        self._radial_columns = []
+        self._radial_bounds = []
+
+    @classmethod
+    def cylinder(cls, radius, height, resolution, origin=(0.0, 0.0, 0.0),
+                 max_columns=2000000, tolerance=1e-4):
+        """Create cylinder stock parallel to Z, centred on ``origin`` at its base.
+
+        Columns whose centres lie outside the radius start empty. The round
+        wall is therefore approximated to the same spacing as cut surfaces.
+        """
+        radius, height = float(radius), float(height)
+        if not math.isfinite(radius) or radius <= 0:
+            raise ValueError("radius must be finite and positive")
+        if not math.isfinite(height) or height <= 0:
+            raise ValueError("height must be finite and positive")
+        cx, cy, zmin = (float(value) for value in origin)
+        if not all(math.isfinite(value) for value in (cx, cy, zmin)):
+            raise ValueError("origin must be finite")
+        grid = cls(
+            (cx - radius, cy - radius, zmin,
+             cx + radius, cy + radius, zmin + height),
+            resolution, max_columns, tolerance)
+        radius2 = radius * radius
+        for j in range(grid.ny):
+            y2 = (grid.ymin + (j + 0.5) * grid.dy - cy) ** 2
+            for i in range(grid.nx):
+                x = grid.xmin + (i + 0.5) * grid.dx - cx
+                if x * x + y2 > radius2:
+                    c = j * grid.nx + i
+                    grid.hi[c] = grid.lo[c]
+        return grid
 
     # ------------------------------------------------------------------ cutting
 
@@ -72,6 +107,7 @@ class DexelGrid:
         """
         if not 0 < tool_id < 65536:
             raise ValueError("tool_id must be between 1 and 65535")
+        self._radial_axis = None
         x0, y0, z0 = start
         x1, y1, z1 = end
         dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
@@ -115,12 +151,9 @@ class DexelGrid:
         scale = tool.table_scale
         sqrt = math.sqrt
 
-        lo, hi = self.lo, self.hi
-        lo_id, hi_id, touch = self.lo_id, self.hi_id, self.touch
-        multi = self.multi
+        touch = self.touch
         dirty = self._dirty
         xmin, ymin = self.xmin, self.ymin
-        tol = self.tolerance
         changed = 0
 
         for j in range(j0, j1 + 1):
@@ -149,40 +182,102 @@ class DexelGrid:
                     bottom = z + table[int(sqrt(d2) * scale + 0.5)]
 
                 c = base + i
-                if c in multi:
-                    if self._cut_multi(c, bottom, top, tool_id):
-                        touch[c] = tool_id
-                        row_changed = True
-                        changed += 1
-                    continue
-
-                low = lo[c]
-                high = hi[c]
-                if high - low <= tol or high - bottom <= tol or top - low <= tol:
-                    continue
-                if bottom - low > tol:
-                    if high - top > tol:
-                        multi[c] = [
-                            [low, bottom, lo_id[c], tool_id],
-                            [top, high, tool_id, hi_id[c]],
-                        ]
-                    else:
-                        hi[c] = bottom
-                        hi_id[c] = tool_id
-                elif high - top > tol:
-                    lo[c] = top
-                    lo_id[c] = tool_id
-                else:
-                    hi[c] = low
-                touch[c] = tool_id
-                row_changed = True
-                changed += 1
+                if self._cut_column(c, bottom, top, tool_id):
+                    touch[c] = tool_id
+                    row_changed = True
+                    changed += 1
 
             if row_changed:
                 dirty.add(j)
                 if j > 0:
                     dirty.add(j - 1)
         return changed
+
+    def cut_turning(self, tool, tool_id, start, end, axis=(0.0, 0.0)):
+        """Remove a convex insert sweep revolved around a Z-parallel spindle."""
+        if not 0 < tool_id < 65536:
+            raise ValueError("tool_id must be between 1 and 65535")
+        axis = tuple(float(value) for value in axis)
+        if len(axis) != 2 or not all(math.isfinite(value) for value in axis):
+            raise ValueError("Spindle axis must have two finite XY coordinates")
+        polygon = tool.sweep(start, end)
+        rmin = min(x for x, _ in polygon)
+        rmax = max(x for x, _ in polygon)
+        if rmin < -self.tolerance:
+            raise ValueError("Turning insert sweeps across the spindle axis are not supported")
+        if (max(z for _, z in polygon) <= self.zmin + self.tolerance
+                or min(z for _, z in polygon) >= self.zmax - self.tolerance):
+            return 0
+        if axis != self._radial_axis:
+            columns = {}
+            for j in range(self.ny):
+                y = self.ymin + (j + 0.5) * self.dy - axis[1]
+                for i in range(self.nx):
+                    x = self.xmin + (i + 0.5) * self.dx - axis[0]
+                    # Share slices between symmetric columns despite floating-point noise.
+                    radius = round(math.hypot(x, y), 12)
+                    columns.setdefault(radius, []).append(j * self.nx + i)
+            self._radial_radii = sorted(columns)
+            self._radial_columns = [columns[r] for r in self._radial_radii]
+            self._radial_bounds = [
+                self._material_bounds(group) for group in self._radial_columns]
+            self._radial_axis = axis
+        changed = 0
+        first = bisect_left(self._radial_radii, max(0, rmin))
+        last = bisect_right(self._radial_radii, rmax)
+        spans = tool.spans(polygon, self._radial_radii[first:last])
+        for index, (bottom, top) in zip(range(first, last), spans):
+            if top - bottom <= self.tolerance:
+                continue
+            low, high = self._radial_bounds[index]
+            if high - bottom <= self.tolerance or top - low <= self.tolerance:
+                continue
+            group_changed = False
+            for c in self._radial_columns[index]:
+                if self._cut_column(c, bottom, top, tool_id):
+                    group_changed = True
+                    self.touch[c] = tool_id
+                    j = c // self.nx
+                    self._dirty.add(j)
+                    if j > 0:
+                        self._dirty.add(j - 1)
+                    changed += 1
+            if group_changed:
+                self._radial_bounds[index] = self._material_bounds(self._radial_columns[index])
+        return changed
+
+    def _material_bounds(self, columns):
+        low, high = math.inf, -math.inf
+        for c in columns:
+            intervals = self.multi.get(c)
+            bottom, top = (intervals[0][0], intervals[-1][1]) if intervals else (self.lo[c], self.hi[c])
+            if top - bottom > self.tolerance:
+                low = min(low, bottom)
+                high = max(high, top)
+        return low, high
+
+    def _cut_column(self, c, bottom, top, tool_id):
+        if c in self.multi:
+            return self._cut_multi(c, bottom, top, tool_id)
+        tol = self.tolerance
+        low, high = self.lo[c], self.hi[c]
+        if high - low <= tol or high - bottom <= tol or top - low <= tol:
+            return False
+        if bottom - low > tol:
+            if high - top > tol:
+                self.multi[c] = [
+                    [low, bottom, self.lo_id[c], tool_id],
+                    [top, high, tool_id, self.hi_id[c]],
+                ]
+            else:
+                self.hi[c] = bottom
+                self.hi_id[c] = tool_id
+        elif high - top > tol:
+            self.lo[c] = top
+            self.lo_id[c] = tool_id
+        else:
+            self.hi[c] = low
+        return True
 
     def _cut_multi(self, c, bottom, top, tool_id):
         tol = self.tolerance
