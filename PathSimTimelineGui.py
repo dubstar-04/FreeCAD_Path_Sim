@@ -136,6 +136,8 @@ class timeline(QtCore.QObject):
         ### collect widget
         self.playButton = self.form.playButton
         self.stopButton = self.form.stopButton
+        self.playButton.setIcon(self.playButton.style().standardIcon(QtGui.QStyle.SP_MediaPlay))
+        self.stopButton.setIcon(self.stopButton.style().standardIcon(QtGui.QStyle.SP_MediaStop))
         self.progressBar = self.form.progressBar
         self.scene = QtGui.QGraphicsScene()
         self.progressBar.setScene(self.scene)

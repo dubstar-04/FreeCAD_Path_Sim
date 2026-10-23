@@ -40,10 +40,8 @@
        <property name="text">
         <string/>
        </property>
-       <property name="icon">
-        <iconset>
-         <normalon>:/icons/Path_BPlay.svg</normalon>
-        </iconset>
+       <property name="toolTip">
+        <string>Start simulation</string>
        </property>
        <property name="iconSize">
         <size>
@@ -70,10 +68,8 @@
        <property name="text">
         <string/>
        </property>
-       <property name="icon">
-        <iconset theme=":/icons/Path_BStop.svg">
-         <normalon>:/icons/Path_BStop.svg</normalon>
-        </iconset>
+       <property name="toolTip">
+        <string>Stop simulation</string>
        </property>
        <property name="iconSize">
         <size>
@@ -134,8 +130,6 @@
    </item>
   </layout>
  </widget>
- <resources>
-  <include location="../../GitHub/FreeCAD/src/Mod/Path/Gui/Resources/Path.qrc"/>
- </resources>
+ <resources/>
  <connections/>
 </ui>
