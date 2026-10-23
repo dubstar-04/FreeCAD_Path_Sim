@@ -68,6 +68,7 @@ class PathSimPanel:
 		self.meshesShown = 0
 		self._resetMeshTiming()
 		self.counter = 0
+		self._closing = False
 
 		self.timeline = PathSimTimelineGui.timeline()
 
@@ -81,11 +82,12 @@ class PathSimPanel:
 		self.sim.cleanup.connect(self.cleanup)
 		self.sim.changedOp.connect(self.loadTool)
 		self.sim.pathReady.connect(self.onPathReady)
+		self.sim.finished.connect(self.onWorkerFinished)
 
 		#self.timeline.quitSignal.connect(self.simStop)
 		self.timeline.playSignal.connect(self.simPlay)
 		self.timeline.stopSignal.connect(self.simStop)
-		self.timeline.skipRequested.connect(self.sim.skipTo)
+		self.timeline.skipRequested.connect(self.simSeek)
 
 		self.setupUi()
 		self.form.comboEngines.currentTextChanged.connect(self.onEngineChange)
@@ -123,6 +125,9 @@ class PathSimPanel:
 	def onEngineChange(self, engine):
 		if engine:
 			self.preferences.SetString("LastEngine", engine)
+			if not self.sim.isRunning():
+				self.sim.reset()
+				self.timeline.setProgress(0)
 
 	def reject(self):
 		self.quit()
@@ -136,8 +141,10 @@ class PathSimPanel:
 			FreeCAD.Console.PrintMessage("\nApply Signal")
 
 	def quit(self):
-		self.timeline.quit()
+		self._closing = True
 		self.simStop()
+		self.sim.wait()
+		self.timeline.quit()
 		self.cleanup()
 		FreeCADGui.Control.closeDialog()
 		
@@ -184,14 +191,26 @@ class PathSimPanel:
 			for start, end, operationId in ranges])
 
 	def simPlay(self):
-
-		if self.sim.isRunning():
+		if not self.sim.isRunning() and not self.prepareSimulation():
 			return
+		self.sim.play()
+		if not self.sim.isRunning():
+			self.startWorker()
 
+	def simSeek(self, progress):
+		if not self.sim.isRunning() and not self.prepareSimulation():
+			return
+		self.sim.skipTo(progress)
+		if not self.sim.isRunning():
+			self.startWorker()
+
+	def prepareSimulation(self):
+		if self.sim.initialised:
+			return True
 		operations = self.getOperations()
 		if len(operations) == 0:
 			print("No Operations active in selected job")
-			return
+			return False
 		
 		self.cleanup()
 		self.updateTimeline()
@@ -202,8 +221,25 @@ class PathSimPanel:
 		job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
 		self.meshView.Mesh = Mesh.Mesh(job.Stock.Shape.tessellate(0.1))
 
-		self.sim.setupEngine(self.form.comboEngines.currentText())
+		return self.sim.setupEngine(self.form.comboEngines.currentText())
+
+	def startWorker(self):
+		self.setSelectionEnabled(False)
 		self.sim.start()
+
+	def onWorkerFinished(self):
+		if self._closing or self.sim.isRunning():
+			return
+		self.onMeshReady()
+		self.reportMeshTiming()
+		if self.sim.needsWork():
+			self.startWorker()
+		else:
+			self.setSelectionEnabled(True)
+
+	def setSelectionEnabled(self, enabled):
+		for widget in (self.form.comboJobs, self.form.comboEngines, self.form.listOperations):
+			widget.setEnabled(enabled)
 	
 	def loadTool(self, op):
 		''' load the tool for the operation '''
@@ -213,8 +249,7 @@ class PathSimPanel:
 		self.tool.Shape = op.ToolController.Tool.Shape
 
 	def simStop(self):
-		if self.sim.isRunning() or not self.sim.isFinished():
-			self.sim.stop()
+		self.sim.stop()
 
 	def setPos(self, pos):
 		# update tool position 

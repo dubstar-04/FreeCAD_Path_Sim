@@ -38,8 +38,8 @@ mw = FreeCADGui.getMainWindow()
 class ProgressGraphicsShape(QtGui.QGraphicsObject):
     ''' graphics item to represent the progress marker on the timeline '''
 
-    progresschange = QtCore.Signal(int)
-    skipRequested = QtCore.Signal(int)
+    progresschange = QtCore.Signal(float)
+    skipRequested = QtCore.Signal(float)
 
     def __init__(self, w, h):
         super().__init__()
@@ -111,13 +111,20 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
         return value
 
     def mouseReleaseEvent(self, event):
-        # print("mouse release event", event)
-        self.skipRequested.emit(event.pos().x())
+        movable = self.flags() & QtGui.QGraphicsItem.ItemIsMovable
+        if movable:
+            super().mouseReleaseEvent(event)
+        position = self.pos().x() if movable else event.pos().x()
         self.skipping = False
+        self.skipRequested.emit(position)
+        event.accept()
 
     def mousePressEvent(self, event):
-        # print("mouse down event", event)
         self.skipping = True
+        if self.flags() & QtGui.QGraphicsItem.ItemIsMovable:
+            super().mousePressEvent(event)
+        else:
+            event.accept()
 
 
 class timeline(QtCore.QObject):
@@ -143,6 +150,7 @@ class timeline(QtCore.QObject):
         self.progressBarWidth = 0  # length of the timeline used for progess calculations and positions
 
         self.timeLine = ProgressGraphicsShape(10, 10)
+        self.timeLine.setFlag(QtGui.QGraphicsItem.ItemIsMovable, False)
         self.progressMarker = ProgressGraphicsShape(10, 10)
 
 
@@ -159,7 +167,7 @@ class timeline(QtCore.QObject):
         self.playButton.clicked.connect(self.play)
         self.stopButton.clicked.connect(self.stop)
         # self.progressMarker.progresschange.connect(self.progressUpdate)
-        # self.progressMarker.skipRequested.connect(self.skip)
+        self.progressMarker.skipRequested.connect(self.skip)
         self.timeLine.skipRequested.connect(self.skip)
 
         # initialise form
@@ -222,7 +230,6 @@ class timeline(QtCore.QObject):
 
     def play(self):
         ''' handle play signals '''
-        self.progress = 0
         self.playSignal.emit()
 
     def stop(self):
@@ -231,7 +238,7 @@ class timeline(QtCore.QObject):
 
     def skip(self, position):
         ''' handle skip signals '''
-        progress = position / self.progressBarWidth
+        progress = max(0.0, min(1.0, position / self.progressBarWidth))
         self.skipRequested.emit(progress)
 
     def show(self):

@@ -26,6 +26,7 @@ import math
 import time
 import threading
 import importlib
+import traceback
 
 from PySide import QtCore, QtGui
 
@@ -54,6 +55,7 @@ class PathSim (QtCore.QThread):
 		QtCore.QThread.__init__(self)
 		self.operations = []
 		self.operationIds = {}
+		self.pathPoints = []
 		self.stepDistance = 2
 		# self.skippedDistance = 0
 		self.running = False
@@ -63,110 +65,187 @@ class PathSim (QtCore.QThread):
 		self._meshLock = threading.Lock()
 		self._latestMesh = None
 		self._meshSignalled = False
+		self._stateLock = threading.Lock()
+		self._wake = threading.Event()
+		self._seekTarget = None
+		self.initialised = False
+		self._stock = None
+		self._operation = None
 
 	def setupEngine(self, engine):
 		# from engines import nativeEngine
 		print("PathSim: Setup Engine:", engine)
 		importstring = "engines.{}".format(engine)
+		self.engine = None
 
 		try:
 			# try to load the selected engine
 			engineModule = importlib.import_module(importstring)
 			eng = engineModule.Engine()
 			self.engine = eng
-		except:
+			return True
+		except Exception as error:
 			self.cleanup.emit()
+			FreeCAD.Console.PrintError("PathSim: Cannot load {}: {}\n".format(importstring, error))
 			msgBox = QtGui.QMessageBox()
 			msgBox.setText("An error occoured while importing {}".format(importstring))
 			msgBox.exec_()
+			return False
 
 	def setOperations(self, operations, operationIds=None):
+		self.reset()
 		self.operations = operations
 		self.operationIds = (
 			{op.Name: index + 1 for index, op in enumerate(operations)}
 			if operationIds is None else dict(operationIds))
 
+	def reset(self):
+		self.initialised = False
+		self.idx = 0
+		self._operation = None
+		with self._stateLock:
+			self.running = False
+			self._seekTarget = None
+
+	def play(self):
+		with self._stateLock:
+			if self.initialised and self.idx >= len(self.pathPoints) and self._seekTarget is None:
+				self._seekTarget = 0
+			self.running = True
+			self._wake.set()
+
 	def stop(self):
-		self.running = False
+		with self._stateLock:
+			self.running = False
+			self._seekTarget = None
+			self._wake.set()
+
+	def needsWork(self):
+		with self._stateLock:
+			return self.running or self._seekTarget is not None
 
 	def run(self):
+		try:
+			self.runSimulation()
+		except Exception:
+			self.stop()
+			self.initialised = False
+			FreeCAD.Console.PrintError("PathSim: Simulation failed:\n" + traceback.format_exc())
+
+	def runSimulation(self):
 
 		if self.engine is None:
 			print("engine not set")
 			return
 
-		self.idx = 0  # reset the progress to 0
-		self.running = True
-		with self._meshLock:
-			self._latestMesh = None
-			self._meshSignalled = False
-			self.meshesPublished = 0
-		job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
-		stock = job.Stock
-		self.engine.setStock(stock.Shape)
-		## Expand the path
-		self.pathPoints = self.discretizePath()
-		self.pathReady.emit(self.getOperationRanges())
+		if not self.initialised:
+			with self._meshLock:
+				self._latestMesh = None
+				self._meshSignalled = False
+				self.meshesPublished = 0
+			job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
+			self._stock = job.Stock.Shape.copy()
+			self.engine.setStock(self._stock)
+			self.pathPoints = self.discretizePath()
+			self.pathReady.emit(self.getOperationRanges())
+			self.initialised = True
 		rot = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 0)
-		op = None
 		meshPending = False
 		lastMesh = time.perf_counter()
 		lastDisplay = 0.0
+		completed = False
 
-		while self.idx < len(self.pathPoints):
+		while True:
+			iterationStart = time.perf_counter()
+			with self._stateLock:
+				self._wake.clear()
+				target = self._seekTarget
+				playing = self.running
 
-			if not self.running:
-				print("QUITING THREAD")
-				self.quit()
+			if target is not None and target < self.idx:
+				self.engine.setStock(self._stock)
+				self.idx = 0
+				self._operation = None
+				meshPending = True
+
+			if target is not None and target == self.idx:
+				self.publishMesh()
+				self.showCurrentPosition(rot)
+				meshPending = False
+				lastMesh = time.perf_counter()
+				with self._stateLock:
+					if self._seekTarget == target:
+						self._seekTarget = None
+				continue
+
+			if not playing and target is None:
+				break
+			if self.idx >= len(self.pathPoints):
+				with self._stateLock:
+					if self._seekTarget is not None:
+						continue
+					self.running = False
+				completed = playing
 				break
 
-			iterationStart = time.perf_counter()
 			pntData = self.pathPoints[self.idx]
 			pos = pntData[0]
 			operation = pntData[1]
+			if self._operation is not operation:
+				self.loadOperation(operation)
+				lastDisplay = 0.0
 
-			if op is not operation:
-				print("Load Tool for op:", operation.Label)
-				op = operation
-				tool = operation.ToolController.Tool
-				self.engine.setTool(tool.Shape)
-				setOperation = getattr(self.engine, "setOperation", None)
-				if setOperation is not None:
-					setOperation(self.operationIds[operation.Name])
-				self.changedOp.emit(operation)
-				lastDisplay = 0.0  # show the tool at its first position straight away
+			self.engine.processPosition(FreeCAD.Placement(pos, rot))
+			self.idx += 1
+			meshPending = True
 
 			if iterationStart - lastDisplay >= self.displayInterval:
 				lastDisplay = iterationStart
 				self.updateToolPosition(pos, rot)
 				self.progress.emit(self.idx / len(self.pathPoints))
 
-			self.engine.processPosition(FreeCAD.Placement(pos, rot))
-			meshPending = True
-
 			if time.perf_counter() - lastMesh >= self.meshInterval:
 				self.publishMesh()
 				lastMesh = time.perf_counter()
 				meshPending = False
 
-			self.idx += 1
-
-			# pace playback by the time each position takes, not by a sleep on top of the work
-			remaining = self.stepDelay - (time.perf_counter() - iterationStart)
-			if remaining > 0:
-				time.sleep(remaining)
+			if target is None:
+				remaining = self.stepDelay - (time.perf_counter() - iterationStart)
+				if remaining > 0:
+					self._wake.wait(remaining)
 
 		if meshPending:
 			self.publishMesh()
-		if self.pathPoints:
-			self.progress.emit(self.idx / len(self.pathPoints))
+		self.showCurrentPosition(rot)
 
 		reportPerformance = getattr(self.engine, "reportPerformance", None)
 		if reportPerformance is not None:
 			reportPerformance()
 
-		# emit complete signal
-		self.complete.emit()
+		if completed:
+			self.complete.emit()
+
+	def loadOperation(self, operation):
+		if self._operation is operation:
+			return
+		self.engine.setTool(operation.ToolController.Tool.Shape)
+		setOperation = getattr(self.engine, "setOperation", None)
+		if setOperation is not None:
+			setOperation(self.operationIds[operation.Name])
+		self._operation = operation
+		self.changedOp.emit(operation)
+
+	def showCurrentPosition(self, rot):
+		if self.pathPoints:
+			pos, operation = self.pathPoints[max(0, self.idx - 1)]
+			if self._operation is operation:
+				self.changedOp.emit(operation)
+			else:
+				self.loadOperation(operation)
+			self.updateToolPosition(pos, rot)
+			self.progress.emit(self.idx / len(self.pathPoints))
+		else:
+			self.progress.emit(0)
 
 	def getOperationRanges(self):
 		''' timeline ranges use the same sampled positions as playback progress '''
@@ -205,9 +284,12 @@ class PathSim (QtCore.QThread):
 		return frame
 
 	def skipTo(self, progress):
-		''' skip the the selected point: progress is a percentage where 1 = 100% '''
-		self.idx = int(progress * len(self.pathPoints))
-		# print("PathSim.Jump: new pos", self.idx, "of", len(self.pathPoints))
+		''' request a reconstructed state; only the worker changes the processed index '''
+		if not math.isfinite(progress):
+			raise ValueError("Seek progress must be finite")
+		with self._stateLock:
+			self._seekTarget = int(max(0.0, min(1.0, progress)) * len(self.pathPoints))
+			self._wake.set()
 
 	def updateToolPosition(self, pos, rot):
 		self.updatePos.emit(FreeCAD.Placement(pos, rot))
