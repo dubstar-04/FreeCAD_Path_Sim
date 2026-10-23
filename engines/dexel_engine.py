@@ -46,7 +46,7 @@ class Engine:
 		self.tool = None
 		self.toolId = 0
 		self.toolIds = {}  # tool id -> operation label, available for colouring
-		self.faceToolIds = []  # tool id for each triangle of the last mesh
+		self.faceToolIds = []  # tool id for each triangle of the last mesh; replaced, never modified
 		self.resolution = None  # model units; None chooses it from the stock size
 		self.targetColumns = 100000
 		self.toolTessellation = 0.1

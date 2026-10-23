@@ -36,7 +36,7 @@ import engines
 class PathSim (QtCore.QThread):
 
 	updatePos = QtCore.Signal(FreeCAD.Placement)
-	updateMesh = QtCore.Signal(Mesh.Mesh)
+	updateMesh = QtCore.Signal(Mesh.Mesh, object)
 	complete = QtCore.Signal()
 	progress = QtCore.Signal(float)
 	cleanup = QtCore.Signal()
@@ -114,15 +114,14 @@ class PathSim (QtCore.QThread):
 			meshPending = True
 
 			if self.idx % 5 == 0:  # update the next every x iterations
-				mesh = self.engine.getMesh()
-				self.updateMesh.emit(mesh)
+				self.publishMesh()
 				meshPending = False
 
 			self.progress.emit(self.idx / len(self.pathPoints))
 			self.idx += 1
 
 		if meshPending:
-			self.updateMesh.emit(self.engine.getMesh())
+			self.publishMesh()
 
 		reportPerformance = getattr(self.engine, "reportPerformance", None)
 		if reportPerformance is not None:
@@ -131,6 +130,13 @@ class PathSim (QtCore.QThread):
 		# emit complete signal
 		self.complete.emit()
 	
+	def publishMesh(self):
+		''' emit the engine mesh with the tool id of each face, if the engine tracks it.
+		Engines must replace faceToolIds on each mesh, not modify it, so the list is
+		safe to hand to the gui thread.'''
+		mesh = self.engine.getMesh()
+		self.updateMesh.emit(mesh, getattr(self.engine, "faceToolIds", None))
+
 	def skipTo(self, progress):
 		''' skip the the selected point: progress is a percentage where 1 = 100% '''
 		self.idx = int(progress * len(self.pathPoints))
