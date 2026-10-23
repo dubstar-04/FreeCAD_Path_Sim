@@ -157,7 +157,7 @@ class timeline(QtCore.QObject):
         ### collect widget
         self.playButton = self.form.playButton
         self.stopButton = self.form.stopButton
-        self.playButton.setIcon(self.playButton.style().standardIcon(QtGui.QStyle.SP_MediaPlay))
+        self.setPlaying(False)
         self.stopButton.setIcon(self.stopButton.style().standardIcon(QtGui.QStyle.SP_MediaStop))
         self.progressBar = self.form.progressBar
         self.scene = QtGui.QGraphicsScene()
@@ -229,8 +229,19 @@ class timeline(QtCore.QObject):
         self.setProgress(self.progress)
 
     def play(self):
-        ''' handle play signals '''
-        self.playSignal.emit()
+        ''' toggle playback using the state confirmed by the task panel '''
+        if self.playing:
+            self.stopSignal.emit()
+        else:
+            self.playSignal.emit()
+
+    def setPlaying(self, playing):
+        self.playing = playing
+        icon = QtGui.QStyle.SP_MediaPause if playing else QtGui.QStyle.SP_MediaPlay
+        label = "Pause simulation" if playing else "Play simulation"
+        self.playButton.setIcon(self.playButton.style().standardIcon(icon))
+        self.playButton.setToolTip(label)
+        self.playButton.setAccessibleName(label)
 
     def stop(self):
         ''' handle stop signals '''

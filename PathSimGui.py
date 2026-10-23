@@ -127,6 +127,7 @@ class PathSimPanel:
 			self.preferences.SetString("LastEngine", engine)
 			if not self.sim.isRunning():
 				self.sim.reset()
+				self.timeline.setPlaying(False)
 				self.timeline.setProgress(0)
 
 	def reject(self):
@@ -182,6 +183,7 @@ class PathSimPanel:
 			self.sim.setOperations(self.getOperations(), operationIds)
 			self.sim.pathPoints = self.sim.discretizePath()
 			self.onPathReady(self.sim.getOperationRanges())
+			self.timeline.setPlaying(False)
 			self.timeline.setProgress(0)
 
 	def onPathReady(self, ranges):
@@ -194,6 +196,7 @@ class PathSimPanel:
 		if not self.sim.isRunning() and not self.prepareSimulation():
 			return
 		self.sim.play()
+		self.timeline.setPlaying(True)
 		if not self.sim.isRunning():
 			self.startWorker()
 
@@ -232,6 +235,7 @@ class PathSimPanel:
 			return
 		self.onMeshReady()
 		self.reportMeshTiming()
+		self.timeline.setPlaying(self.sim.running)
 		if self.sim.needsWork():
 			self.startWorker()
 		else:
@@ -250,6 +254,7 @@ class PathSimPanel:
 
 	def simStop(self):
 		self.sim.stop()
+		self.timeline.setPlaying(False)
 
 	def setPos(self, pos):
 		# update tool position 
