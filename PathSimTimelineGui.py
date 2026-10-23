@@ -49,6 +49,7 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
         self.width = w
         self.height = h
         self.skipping = False  # true if the widget is being dragged
+        self.segments = []
         self.brush = QtGui.QBrush()
         self.brush.setStyle(QtCore.Qt.SolidPattern)
         self.pen = QtGui.QPen()
@@ -71,10 +72,22 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
     def setPen(self, pen):
         self.pen = pen
 
+    def setSegments(self, segments):
+        self.segments = list(segments)
+        self.update()
+
     def paint(self, painter, option, widget):
         painter.setBrush(self.brush)
         painter.setPen(self.pen)
         painter.drawRect(0, 0, self.width, self.height)
+        if self.segments:
+            painter.save()
+            painter.setPen(QtCore.Qt.NoPen)
+            for start, end, colour in self.segments:
+                painter.setBrush(colour)
+                painter.drawRect(QtCore.QRectF(
+                    start * self.width, 0, (end - start) * self.width, self.height))
+            painter.restore()
 
     def boundingRect(self):
         return QtCore.QRectF(0, 0, self.width, self.height)
@@ -179,6 +192,9 @@ class timeline(QtCore.QObject):
         position = self.progress * self.progressBarWidth
         if self.progressMarker.skipping is False:
             self.progressMarker.setPos(position, pos.y())
+
+    def setOperationRanges(self, ranges):
+        self.timeLine.setSegments(ranges)
 
     def progressUpdate(self, position):
         ''' handle progress changes from the progress marker position '''

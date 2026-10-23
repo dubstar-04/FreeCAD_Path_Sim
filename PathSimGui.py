@@ -73,12 +73,14 @@ class PathSimPanel:
 
 		# connect ui components
 		self.form.comboJobs.currentIndexChanged.connect(self.onJobChange)
+		self.form.listOperations.itemChanged.connect(self.updateTimeline)
 		self.sim.updatePos.connect(self.setPos)
 		self.sim.complete.connect(self.simComplete)
 		self.sim.meshReady.connect(self.onMeshReady)
 		self.sim.progress.connect(self.timeline.setProgress)
 		self.sim.cleanup.connect(self.cleanup)
 		self.sim.changedOp.connect(self.loadTool)
+		self.sim.pathReady.connect(self.onPathReady)
 
 		#self.timeline.quitSignal.connect(self.simStop)
 		self.timeline.playSignal.connect(self.simPlay)
@@ -157,6 +159,7 @@ class PathSimPanel:
 				listItem.setCheckState(QtCore.Qt.CheckState.Checked)
 				self.operations.append(op)
 				self.form.listOperations.addItem(listItem)
+		self.updateTimeline()
 
 	def getOperations(self):
 		activeOps = []
@@ -165,6 +168,20 @@ class PathSimPanel:
 				activeOps.append(self.operations[i])
 
 		return activeOps
+
+	def updateTimeline(self):
+		if not self.sim.isRunning():
+			operationIds = {op.Name: index + 1 for index, op in enumerate(self.operations)}
+			self.sim.setOperations(self.getOperations(), operationIds)
+			self.sim.pathPoints = self.sim.discretizePath()
+			self.onPathReady(self.sim.getOperationRanges())
+			self.timeline.setProgress(0)
+
+	def onPathReady(self, ranges):
+		self.timeline.setOperationRanges([
+			(start, end, QtGui.QColor.fromRgbF(
+				*OPERATION_COLOURS[(operationId - 1) % len(OPERATION_COLOURS)]))
+			for start, end, operationId in ranges])
 
 	def simPlay(self):
 
@@ -177,6 +194,7 @@ class PathSimPanel:
 			return
 		
 		self.cleanup()
+		self.updateTimeline()
 		self.colourWarned = False
 		self.meshesShown = 0
 		self._resetMeshTiming()
@@ -185,8 +203,6 @@ class PathSimPanel:
 		self.meshView.Mesh = Mesh.Mesh(job.Stock.Shape.tessellate(0.1))
 
 		self.sim.setupEngine(self.form.comboEngines.currentText())
-		operationIds = {op.Name: index + 1 for index, op in enumerate(self.operations)}
-		self.sim.setOperations(operations, operationIds)
 		self.sim.start()
 	
 	def loadTool(self, op):

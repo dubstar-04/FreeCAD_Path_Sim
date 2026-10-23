@@ -41,6 +41,7 @@ class PathSim (QtCore.QThread):
 	progress = QtCore.Signal(float)
 	cleanup = QtCore.Signal()
 	changedOp = QtCore.Signal(object)
+	pathReady = QtCore.Signal(object)
 
 	# seconds taken by each tool position during playback, 0 runs as fast as the engine can
 	stepDelay = 0.05
@@ -105,6 +106,7 @@ class PathSim (QtCore.QThread):
 		self.engine.setStock(stock.Shape)
 		## Expand the path
 		self.pathPoints = self.discretizePath()
+		self.pathReady.emit(self.getOperationRanges())
 		rot = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 0)
 		op = None
 		meshPending = False
@@ -165,7 +167,20 @@ class PathSim (QtCore.QThread):
 
 		# emit complete signal
 		self.complete.emit()
-	
+
+	def getOperationRanges(self):
+		''' timeline ranges use the same sampled positions as playback progress '''
+		ranges = []
+		count = len(self.pathPoints)
+		for index, (_, operation) in enumerate(self.pathPoints):
+			operationId = self.operationIds[operation.Name]
+			if ranges and ranges[-1][2] == operationId:
+				ranges[-1][1] = index + 1
+			else:
+				ranges.append([index, index + 1, operationId])
+		return [(start / count, end / count, operationId)
+			for start, end, operationId in ranges]
+
 	def publishMesh(self):
 		''' make the engine mesh available to the display, with the operation id of each face if
 		the engine tracks it. Only the newest mesh is kept, so a slow display skips meshes
