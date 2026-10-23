@@ -88,6 +88,7 @@ class PathSim (QtCore.QThread):
 		self.pathPoints = self.discretizePath()
 		rot = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 0)
 		op = ""
+		meshPending = False
 
 		while self.idx < len(self.pathPoints):
 
@@ -110,13 +111,22 @@ class PathSim (QtCore.QThread):
 			
 			self.updateToolPosition(pos, rot)
 			self.engine.processPosition(FreeCAD.Placement(pos, rot))
+			meshPending = True
 
 			if self.idx % 5 == 0:  # update the next every x iterations
 				mesh = self.engine.getMesh()
 				self.updateMesh.emit(mesh)
+				meshPending = False
 
 			self.progress.emit(self.idx / len(self.pathPoints))
 			self.idx += 1
+
+		if meshPending:
+			self.updateMesh.emit(self.engine.getMesh())
+
+		reportPerformance = getattr(self.engine, "reportPerformance", None)
+		if reportPerformance is not None:
+			reportPerformance()
 
 		# emit complete signal
 		self.complete.emit()
