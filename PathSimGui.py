@@ -58,6 +58,7 @@ class PathSimPanel:
 	def __init__(self, obj=None):
 		# self will create a Qt widget from the ui file
 		self.form = FreeCADGui.PySideUic.loadUi(path_to_ui)
+		self.preferences = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/PathSim")
 
 		self.tool = None
 		self.sim = PathSim.PathSim()
@@ -85,6 +86,7 @@ class PathSimPanel:
 		self.timeline.skipRequested.connect(self.sim.skipTo)
 
 		self.setupUi()
+		self.form.comboEngines.currentTextChanged.connect(self.onEngineChange)
 
 	def setupUi(self):
 		jobList = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")
@@ -102,10 +104,24 @@ class PathSimPanel:
 		engines = os.listdir(path_to_engines)
 		for filename in engines:
 			engine_str = "_engine.py"
-			if engine_str in filename:
+			if filename.endswith(engine_str):
 				engineName = filename.replace(".py", "")
 				self.form.comboEngines.addItem(engineName)
-		
+
+		savedEngine = self.preferences.GetString("LastEngine", "")
+		if savedEngine:
+			index = self.form.comboEngines.findText(savedEngine)
+			if index >= 0:
+				self.form.comboEngines.setCurrentIndex(index)
+			else:
+				FreeCAD.Console.PrintWarning(
+					"PathSim: Saved engine '{}' is unavailable; using '{}'.\n".format(
+						savedEngine, self.form.comboEngines.currentText()))
+
+	def onEngineChange(self, engine):
+		if engine:
+			self.preferences.SetString("LastEngine", engine)
+
 	def reject(self):
 		self.quit()
 
