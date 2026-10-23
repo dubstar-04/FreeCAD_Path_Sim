@@ -59,9 +59,11 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
         self.pen.setColor(colour)
 
     def setRect(self, x, y, w, h):
+        self.prepareGeometryChange()
         self.setPos(x, y)
         self.width = w
         self.height = h
+        self.update()
 
     def setMaxX(self, x):
         self.xMax = x
@@ -142,7 +144,6 @@ class timeline(QtCore.QObject):
         self.form.setParent(mw.centralWidget())
         self.form.setWindowFlags(QtCore.Qt.Widget | QtCore.Qt.FramelessWindowHint | QtCore.Qt.CustomizeWindowHint)
         self.form.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        mw.installEventFilter(self)
 
         # timeline members
         self.progress = 0  # progess complete as a float i.e. 1.0 = %100 
@@ -172,6 +173,11 @@ class timeline(QtCore.QObject):
 
         # initialise form
         self.initProgressBar()
+        self._positionTimer = QtCore.QTimer(self)
+        self._positionTimer.setSingleShot(True)
+        self._positionTimer.timeout.connect(self.setPosition)
+        mw.installEventFilter(self)
+        mw.centralWidget().installEventFilter(self)
         self.setPosition()
         self.setProgress(0)
 
@@ -187,9 +193,11 @@ class timeline(QtCore.QObject):
 
 
     def eventFilter(self, object, event):
-        ''' handle resize events for the freecad ui '''
-        if event.type() == QtCore.QEvent.Type.Resize:
-            self.setPosition()
+        ''' reposition after FreeCAD has finished updating its dock layout '''
+        if event.type() in (
+                QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.LayoutRequest,
+                QtCore.QEvent.Type.Show):
+            self._positionTimer.start(0)
 
         return False
 
@@ -221,11 +229,13 @@ class timeline(QtCore.QObject):
         y = cengeom.height() - self.form.height() - 50
         newWidth = cengeom.width() * 0.8
         newHeight = self.form.height()
-        self.form.setGeometry(x, y, newWidth, newHeight)
+        self.form.setGeometry(round(x), round(y), round(newWidth), newHeight)
 
         self.progressBarWidth = self.form.geometry().width() * 0.9
         self.progressMarker.setMaxX(self.progressBarWidth)
         self.timeLine.setRect(self.timeLine.pos().x(), self.timeLine.pos().y(), self.progressBarWidth, 10)
+        self.scene.setSceneRect(
+            0, 0, self.progressBarWidth + self.progressMarker.width, self.timeLine.height)
         self.setProgress(self.progress)
 
     def play(self):
@@ -258,5 +268,8 @@ class timeline(QtCore.QObject):
 
     def quit(self, data=None):
         ''' handle the form being closed'''
+        self._positionTimer.stop()
+        mw.removeEventFilter(self)
+        mw.centralWidget().removeEventFilter(self)
         self.form.close()
         self.deleteLater()
