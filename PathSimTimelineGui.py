@@ -81,18 +81,19 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
     def paint(self, painter, option, widget):
         painter.setBrush(self.brush)
         painter.setPen(self.pen)
-        painter.drawRect(0, 0, self.width, self.height)
+        painter.drawRect(self.boundingRect())
         if self.segments:
             painter.save()
             painter.setPen(QtCore.Qt.NoPen)
             for start, end, colour in self.segments:
                 painter.setBrush(colour)
                 painter.drawRect(QtCore.QRectF(
-                    start * self.width, 0, (end - start) * self.width, self.height))
+                    start * self.width, -self.height / 2,
+                    (end - start) * self.width, self.height))
             painter.restore()
 
     def boundingRect(self):
-        return QtCore.QRectF(0, 0, self.width, self.height)
+        return QtCore.QRectF(0, -self.height / 2, self.width, self.height)
 
     def itemChange(self, change, value):
 
@@ -129,6 +130,21 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
             event.accept()
 
 
+class ProgressMarker(ProgressGraphicsShape):
+    def boundingRect(self):
+        return QtCore.QRectF(-self.width / 2, -self.height / 2, self.width, self.height)
+
+    def shape(self):
+        path = QtGui.QPainterPath()
+        path.addEllipse(self.boundingRect())
+        return path
+
+    def paint(self, painter, option, widget):
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(self.brush)
+        painter.drawEllipse(self.boundingRect())
+
+
 class timeline(QtCore.QObject):
     ''' form and controls shown on screen during the simulation '''
     # quitSignal = QtCore.Signal()
@@ -150,17 +166,23 @@ class timeline(QtCore.QObject):
         self.progressMarker = None  # graphics item representing the progress marker
         self.progressBarWidth = 0  # length of the timeline used for progess calculations and positions
 
-        self.timeLine = ProgressGraphicsShape(10, 10)
+        self.timeLine = ProgressGraphicsShape(10, 6)
         self.timeLine.setFlag(QtGui.QGraphicsItem.ItemIsMovable, False)
-        self.progressMarker = ProgressGraphicsShape(10, 10)
+        self.progressMarker = ProgressMarker(16, 16)
+        self.progressMarker.setZValue(1)
 
 
         ### collect widget
-        self.playButton = self.form.playButton
-        self.stopButton = self.form.stopButton
+        self.playButton = self.form.findChild(QtGui.QPushButton, "playButton")
+        self.stopButton = self.form.findChild(QtGui.QPushButton, "stopButton")
+        buttonLayout = self.form.findChild(QtGui.QWidget, "buttonGroup").layout()
+        buttonLayout.setContentsMargins(0, 0, 0, 0)
+        buttonLayout.setSpacing(4)
+        buttonLayout.setSizeConstraint(QtGui.QLayout.SetFixedSize)
         self.setPlaying(False)
         self.stopButton.setIcon(self.stopButton.style().standardIcon(QtGui.QStyle.SP_MediaStop))
         self.progressBar = self.form.progressBar
+        self.progressBar.setRenderHint(QtGui.QPainter.Antialiasing)
         self.scene = QtGui.QGraphicsScene()
         self.progressBar.setScene(self.scene)
 
@@ -226,16 +248,17 @@ class timeline(QtCore.QObject):
         cengeom = cen.geometry()
 
         x = cengeom.width() * 0.1
-        y = cengeom.height() - self.form.height() - 50
+        y = max(0, cengeom.height() - self.form.height() - 36)
         newWidth = cengeom.width() * 0.8
         newHeight = self.form.height()
         self.form.setGeometry(round(x), round(y), round(newWidth), newHeight)
 
         self.progressBarWidth = self.form.geometry().width() * 0.9
         self.progressMarker.setMaxX(self.progressBarWidth)
-        self.timeLine.setRect(self.timeLine.pos().x(), self.timeLine.pos().y(), self.progressBarWidth, 10)
+        self.timeLine.setRect(0, 0, self.progressBarWidth, 6)
+        radius = self.progressMarker.width / 2
         self.scene.setSceneRect(
-            0, 0, self.progressBarWidth + self.progressMarker.width, self.timeLine.height)
+            -radius, -radius, self.progressBarWidth + 2 * radius, 2 * radius)
         self.setProgress(self.progress)
 
     def play(self):
