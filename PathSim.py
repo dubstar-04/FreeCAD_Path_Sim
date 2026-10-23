@@ -24,23 +24,30 @@
 
 import math
 import time
+import threading
 import importlib
 
 from PySide import QtCore, QtGui
 
 import FreeCAD
-import Mesh
 
 import engines
 
 class PathSim (QtCore.QThread):
 
 	updatePos = QtCore.Signal(FreeCAD.Placement)
-	updateMesh = QtCore.Signal(Mesh.Mesh, object)
+	meshReady = QtCore.Signal()
 	complete = QtCore.Signal()
 	progress = QtCore.Signal(float)
 	cleanup = QtCore.Signal()
 	changedOp = QtCore.Signal(object)
+
+	# seconds taken by each tool position during playback, 0 runs as fast as the engine can
+	stepDelay = 0.05
+	# minimum seconds between meshes sent to the display
+	meshInterval = 0.2
+	# minimum seconds between tool position and progress updates sent to the display
+	displayInterval = 1 / 30
 
 	def __init__(self):
 		QtCore.QThread.__init__(self)
@@ -50,6 +57,10 @@ class PathSim (QtCore.QThread):
 		self.running = False
 		self.idx = 0  # index of current position
 		self.engine = None
+		self.meshesPublished = 0
+		self._meshLock = threading.Lock()
+		self._latestMesh = None
+		self._meshSignalled = False
 
 	def setupEngine(self, engine):
 		# from engines import nativeEngine
@@ -81,14 +92,20 @@ class PathSim (QtCore.QThread):
 
 		self.idx = 0  # reset the progress to 0
 		self.running = True
+		with self._meshLock:
+			self._latestMesh = None
+			self._meshSignalled = False
+			self.meshesPublished = 0
 		job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
 		stock = job.Stock
 		self.engine.setStock(stock.Shape)
 		## Expand the path
 		self.pathPoints = self.discretizePath()
 		rot = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 0)
-		op = ""
+		op = None
 		meshPending = False
+		lastMesh = time.perf_counter()
+		lastDisplay = 0.0
 
 		while self.idx < len(self.pathPoints):
 
@@ -97,31 +114,43 @@ class PathSim (QtCore.QThread):
 				self.quit()
 				break
 
+			iterationStart = time.perf_counter()
 			pntData = self.pathPoints[self.idx]
 			pos = pntData[0]
-			opLabel = pntData[1]
+			operation = pntData[1]
 
-			if op != opLabel:
-				print("Load Tool for op:", opLabel)
-				op = opLabel
-				operation = FreeCAD.ActiveDocument.getObject(op)
+			if op is not operation:
+				print("Load Tool for op:", operation.Label)
+				op = operation
 				tool = operation.ToolController.Tool
 				self.engine.setTool(tool.Shape)
 				self.changedOp.emit(operation)
-			
-			self.updateToolPosition(pos, rot)
+				lastDisplay = 0.0  # show the tool at its first position straight away
+
+			if iterationStart - lastDisplay >= self.displayInterval:
+				lastDisplay = iterationStart
+				self.updateToolPosition(pos, rot)
+				self.progress.emit(self.idx / len(self.pathPoints))
+
 			self.engine.processPosition(FreeCAD.Placement(pos, rot))
 			meshPending = True
 
-			if self.idx % 5 == 0:  # update the next every x iterations
+			if time.perf_counter() - lastMesh >= self.meshInterval:
 				self.publishMesh()
+				lastMesh = time.perf_counter()
 				meshPending = False
 
-			self.progress.emit(self.idx / len(self.pathPoints))
 			self.idx += 1
+
+			# pace playback by the time each position takes, not by a sleep on top of the work
+			remaining = self.stepDelay - (time.perf_counter() - iterationStart)
+			if remaining > 0:
+				time.sleep(remaining)
 
 		if meshPending:
 			self.publishMesh()
+		if self.pathPoints:
+			self.progress.emit(self.idx / len(self.pathPoints))
 
 		reportPerformance = getattr(self.engine, "reportPerformance", None)
 		if reportPerformance is not None:
@@ -131,11 +160,27 @@ class PathSim (QtCore.QThread):
 		self.complete.emit()
 	
 	def publishMesh(self):
-		''' emit the engine mesh with the tool id of each face, if the engine tracks it.
-		Engines must replace faceToolIds on each mesh, not modify it, so the list is
-		safe to hand to the gui thread.'''
+		''' make the engine mesh available to the display, with the tool id of each face if
+		the engine tracks it. Only the newest mesh is kept, so a slow display skips meshes
+		instead of building up a backlog. Engines must replace faceToolIds for each mesh,
+		not modify it, so the list is safe to hand to the gui thread.'''
 		mesh = self.engine.getMesh()
-		self.updateMesh.emit(mesh, getattr(self.engine, "faceToolIds", None))
+		frame = (mesh, getattr(self.engine, "faceToolIds", None))
+		with self._meshLock:
+			self._latestMesh = frame
+			self.meshesPublished += 1
+			notify = not self._meshSignalled
+			self._meshSignalled = True
+		if notify:
+			self.meshReady.emit()
+
+	def takeMesh(self):
+		''' return the newest (mesh, faceToolIds) not yet displayed, or None '''
+		with self._meshLock:
+			frame = self._latestMesh
+			self._latestMesh = None
+			self._meshSignalled = False
+		return frame
 
 	def skipTo(self, progress):
 		''' skip the the selected point: progress is a percentage where 1 = 100% '''
@@ -144,7 +189,6 @@ class PathSim (QtCore.QThread):
 
 	def updateToolPosition(self, pos, rot):
 		self.updatePos.emit(FreeCAD.Placement(pos, rot))
-		time.sleep(0.05)
 
 	def discretizePath(self):
 		''' split the path in to discrete points'''
@@ -210,7 +254,7 @@ class PathSim (QtCore.QThread):
 							segX = centrePos.x + math.cos(angle) * radius
 							segY = centrePos.y + math.sin(angle) * radius
 							segZ = currentPos.z + stepZ * seg
-							pathPoints.append([FreeCAD.Vector(segX, segY, segZ), op.Label])
+							pathPoints.append([FreeCAD.Vector(segX, segY, segZ), op])
 							
 
 						currentPos.x = pos.x
@@ -245,7 +289,7 @@ class PathSim (QtCore.QThread):
 							for i in range(steps):
 								# print("step ", i, "of", steps, "POS:", pos)
 								pos = currentPos.add(_stepDistance)
-								pathPoints.append([FreeCAD.Vector(pos.x, pos.y, pos.z), op.Label])
+								pathPoints.append([FreeCAD.Vector(pos.x, pos.y, pos.z), op])
 								currentPos.x = pos.x
 								currentPos.y = pos.y
 								currentPos.z = pos.z

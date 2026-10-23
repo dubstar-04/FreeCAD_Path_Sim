@@ -23,6 +23,7 @@
 # ***************************************************************************
 
 import os 
+import time
 
 from PySide import QtGui, QtCore
 
@@ -63,6 +64,8 @@ class PathSimPanel:
 		self.jobs = []
 		self.meshView = None
 		self.colourWarned = False
+		self.meshesShown = 0
+		self._resetMeshTiming()
 		self.counter = 0
 
 		self.timeline = PathSimTimelineGui.timeline()
@@ -71,7 +74,7 @@ class PathSimPanel:
 		self.form.comboJobs.currentIndexChanged.connect(self.onJobChange)
 		self.sim.updatePos.connect(self.setPos)
 		self.sim.complete.connect(self.simComplete)
-		self.sim.updateMesh.connect(self.updateMesh)
+		self.sim.meshReady.connect(self.onMeshReady)
 		self.sim.progress.connect(self.timeline.setProgress)
 		self.sim.cleanup.connect(self.cleanup)
 		self.sim.changedOp.connect(self.loadTool)
@@ -156,6 +159,8 @@ class PathSimPanel:
 		
 		self.cleanup()
 		self.colourWarned = False
+		self.meshesShown = 0
+		self._resetMeshTiming()
 		self.meshView = FreeCAD.ActiveDocument.addObject("Mesh::Feature", "cutshape")
 		job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
 		self.meshView.Mesh = Mesh.Mesh(job.Stock.Shape.tessellate(0.1))
@@ -177,7 +182,8 @@ class PathSimPanel:
 
 	def setPos(self, pos):
 		# update tool position 
-		self.tool.Placement = pos
+		if self.tool is not None:
+			self.tool.Placement = pos
 
 	def cleanup(self):
 		self.cleanupStock()
@@ -197,15 +203,54 @@ class PathSimPanel:
 
 	def simComplete(self):
 		''' slot called on simulation completion'''
+		self.reportMeshTiming()
 		self.cleanupTool()
 
+	def onMeshReady(self):
+		''' slot called when the simulation has a new mesh. Only the newest mesh is
+		displayed, meshes that arrive while the view is busy are skipped '''
+		frame = self.sim.takeMesh()
+		if frame is not None:
+			self.updateMesh(*frame)
+
 	def updateMesh(self, mesh, faceToolIds=None):
-		''' slot called at intervals to update the meshView'''
-		if self.meshView is not None:
-			self.meshView.Mesh = mesh
-			FreeCAD.ActiveDocument.recompute()
-			# recompute resets the view's materials, so colours are applied after it
-			self.applyFaceColours(mesh, faceToolIds)
+		''' update the meshView '''
+		if self.meshView is None:
+			return
+
+		start = time.perf_counter()
+		self.meshView.Mesh = mesh
+		assigned = time.perf_counter()
+		FreeCAD.ActiveDocument.recompute()
+		recomputed = time.perf_counter()
+		# recompute resets the view's materials, so colours are applied after it
+		self.applyFaceColours(mesh, faceToolIds)
+		finished = time.perf_counter()
+
+		self.meshesShown += 1
+		self._meshTiming[0] += 1
+		self._meshTiming[1] += assigned - start
+		self._meshTiming[2] += recomputed - assigned
+		self._meshTiming[3] += finished - recomputed
+		if self._meshTiming[0] >= 20:
+			self.reportMeshTiming()
+
+	def _resetMeshTiming(self):
+		self._meshTiming = [0, 0.0, 0.0, 0.0]  # meshes, assign, recompute and colour seconds
+
+	def reportMeshTiming(self):
+		''' report display timings since the last report '''
+		shown, assign, recompute, colour = self._meshTiming
+		if not shown:
+			return
+
+		published = self.sim.meshesPublished
+		FreeCAD.Console.PrintMessage(
+			"[PathSim display] meshes_shown={} meshes_skipped={} assign_avg_ms={:.3f} "
+			"recompute_avg_ms={:.3f} colour_avg_ms={:.3f}\n".format(
+				self.meshesShown, max(0, published - self.meshesShown),
+				assign * 1000 / shown, recompute * 1000 / shown, colour * 1000 / shown))
+		self._resetMeshTiming()
 
 	def applyFaceColours(self, mesh, faceToolIds):
 		''' colour each face by the tool that cut it. faceToolIds has one id per face '''
