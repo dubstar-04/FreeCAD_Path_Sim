@@ -15,12 +15,22 @@ def sample_turning(commands, step_distance, initial=(0.0, 0.0, 0.0)):
 
 def sample_turning_moves(commands, step_distance, initial=(0.0, 0.0, 0.0)):
     """Sample turning positions with their rapid/feed motion classification."""
+    return sample_turning_path(commands, step_distance, initial)[0]
+
+
+def sample_turning_path(commands, step_distance, initial=(0.0, 0.0, 0.0)):
+    """Return motion samples and the exclusive sample index of each command end.
+
+    Command boundaries allow straight sweeps to be batched without skipping
+    corners. The first move remains a single tool-locating sample.
+    """
     if not math.isfinite(step_distance) or step_distance <= 0:
         raise ValueError("step_distance must be finite and positive")
     position = tuple(float(value) for value in initial)
     if len(position) != 3 or not all(math.isfinite(value) for value in position):
         raise ValueError("Initial turning position must have three finite coordinates")
     samples = []
+    command_ends = []
     absolute = True
     xscale = 1.0
     for name, params in commands:
@@ -48,6 +58,7 @@ def sample_turning_moves(commands, step_distance, initial=(0.0, 0.0, 0.0)):
             raise ValueError("Turning paths must stay in the XZ plane (Y = 0)")
         distance = math.dist(position, end)
         rapid = name in ("G0", "G00")
+        first = len(samples)
         if not samples:
             samples.append((end, rapid))
         elif distance > 0:
@@ -56,8 +67,10 @@ def sample_turning_moves(commands, step_distance, initial=(0.0, 0.0, 0.0)):
                 t = step / steps
                 samples.append((tuple(a + (b - a) * t for a, b in zip(position, end)), rapid))
             samples.append((end, rapid))
+        if len(samples) > first:
+            command_ends.append(len(samples))
         position = end
-    return samples
+    return samples, command_ends
 
 
 def move_duration(start, end, horizontal_speed, vertical_speed, rapid=False, turning=False):

@@ -61,8 +61,11 @@ class Engine:
 	profiles; turning tools use their convex XZ insert section. The surface is
 	returned as a FreeCAD mesh. Tool positions are
 	cut as segments from the previous position so material between the sampled
-	positions is removed too.
+	positions is removed too. Turning supports complete straight-command sweeps
+	without intermediate samples.
 	'''
+
+	supportsTurningSweeps = True
 
 	def __init__(self):
 		self.grid = None

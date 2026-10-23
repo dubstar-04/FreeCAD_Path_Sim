@@ -33,7 +33,7 @@ from PySide import QtCore, QtGui
 import FreeCAD
 
 import engines
-from dexel.motion import sample_turning_moves, move_duration
+from dexel.motion import sample_turning_path, move_duration
 
 
 def isTurningOperation(operation):
@@ -64,6 +64,8 @@ class PathSim (QtCore.QThread):
 		self.operationIds = {}
 		self.pathPoints = []
 		self.pathRapid = []
+		self.turningCommandEnds = set()
+		self._pendingCut = None
 		self.stepDistance = 2
 		# self.skippedDistance = 0
 		self.running = False
@@ -112,6 +114,7 @@ class PathSim (QtCore.QThread):
 
 	def reset(self):
 		self.initialised = False
+		self._pendingCut = None
 		self.idx = 0
 		self._operation = None
 		self._speeds = None
@@ -159,6 +162,7 @@ class PathSim (QtCore.QThread):
 				self.meshesPublished = 0
 			job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
 			self._stock = job.Stock.Shape.copy()
+			self._pendingCut = None
 			self.engine.setStock(self._stock)
 			self.pathPoints = self.discretizePath()
 			self.pathReady.emit(self.getOperationRanges())
@@ -180,6 +184,7 @@ class PathSim (QtCore.QThread):
 				playing = self.running
 
 			if target is not None and target < self.idx:
+				self._pendingCut = None
 				self.engine.setStock(self._stock)
 				self.idx = 0
 				self._operation = None
@@ -229,7 +234,14 @@ class PathSim (QtCore.QThread):
 						self._speeds[horizontal], self._speeds[vertical],
 						rapid=rapid, turning=isTurningOperation(operation))
 
-			self.engine.processPosition(FreeCAD.Placement(pos, rot))
+			placement = FreeCAD.Placement(pos, rot)
+			if (isTurningOperation(operation) and self.turningCommandEnds
+					and getattr(self.engine, "supportsTurningSweeps", False)):
+				self._pendingCut = placement
+				if self.idx + 1 in self.turningCommandEnds:
+					self.flushPendingCut()
+			else:
+				self.engine.processPosition(placement)
 			self.idx += 1
 			meshPending = True
 
@@ -265,6 +277,7 @@ class PathSim (QtCore.QThread):
 	def loadOperation(self, operation):
 		if self._operation is operation:
 			return
+		self.flushPendingCut()
 		if isTurningOperation(operation):
 			setTool = getattr(self.engine, "setTurningTool", None)
 			if setTool is None:
@@ -331,11 +344,18 @@ class PathSim (QtCore.QThread):
 		return [(start / count, end / count, operationId)
 			for start, end, operationId in ranges]
 
+	def flushPendingCut(self):
+		''' apply deferred straight turning motion before changing tools or showing stock '''
+		if self._pendingCut is not None:
+			self.engine.processPosition(self._pendingCut)
+			self._pendingCut = None
+
 	def publishMesh(self):
 		''' make the engine mesh available to the display, with the operation id of each face if
 		the engine tracks it. Only the newest mesh is kept, so a slow display skips meshes
 		instead of building up a backlog. Engines must replace faceOperationIds for each mesh,
 		not modify it, so the list is safe to hand to the gui thread.'''
+		self.flushPendingCut()
 		mesh = self.engine.getMesh()
 		frame = (mesh, getattr(self.engine, "faceOperationIds", None))
 		with self._meshLock:
@@ -369,15 +389,18 @@ class PathSim (QtCore.QThread):
 		''' split the path in to discrete points'''
 		pathPoints = []
 		pathRapid = []
+		turningCommandEnds = set()
 		currentPos = FreeCAD.Vector(0, 0, 0)
 		pos = FreeCAD.Vector(0, 0, 0)
 		centrePos = FreeCAD.Vector()
 		
 		for op in self.operations:
 			if isTurningOperation(op):
-				samples = sample_turning_moves(
+				samples, commandEnds = sample_turning_path(
 					((command.Name, command.Parameters) for command in op.Path.Commands),
 					self.stepDistance, (currentPos.x, currentPos.y, currentPos.z))
+				offset = len(pathPoints)
+				turningCommandEnds.update(offset + end for end in commandEnds)
 				pathPoints.extend([FreeCAD.Vector(*point), op] for point, _ in samples)
 				pathRapid.extend(rapid for _, rapid in samples)
 				if samples:
@@ -483,4 +506,5 @@ class PathSim (QtCore.QThread):
 								currentPos.z = pos.z
 								#self.skippedDistance = 0
 		self.pathRapid = pathRapid
+		self.turningCommandEnds = turningCommandEnds
 		return pathPoints
