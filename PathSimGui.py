@@ -121,7 +121,7 @@ class PathSimPanel:
 		FreeCADGui.Control.closeDialog()
 		
 	def getStandardButtons(self):
-		return int(QtGui.QDialogButtonBox.Ok | QtGui.QDialogButtonBox.Cancel)
+		return QtGui.QDialogButtonBox.Ok | QtGui.QDialogButtonBox.Cancel
 
 	def onJobChange(self):
 		j = self.jobs[self.form.comboJobs.currentIndex()]
