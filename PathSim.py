@@ -268,10 +268,12 @@ class PathSim (QtCore.QThread):
 				meshPending = False
 
 			if target is None:
-				playbackDeadline += duration
-				remaining = playbackDeadline - time.perf_counter()
-				# Batch short moves within one display frame, carrying computation
-				# and meshing time forward instead of adding it to every segment.
+				now = time.perf_counter()
+				# Limit catch-up to one display frame after slow cutting or meshing,
+				# otherwise deferred cuts race through whole passes between updates.
+				playbackDeadline = max(
+					playbackDeadline, now - self.displayInterval) + duration
+				remaining = playbackDeadline - now
 				if remaining >= self.displayInterval:
 					self._wake.wait(remaining)
 

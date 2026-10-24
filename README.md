@@ -34,9 +34,10 @@ Backward seeks rebuild from the starting stock, so long paths can still take
 time to reconstruct.
 
 The dexel engine batches straight turning cuts within each motion command.
-Playback timing and timeline positions are unchanged; stock updates and seeks
-include the exact partial move at the current sampled position. Stock resolution
-and mesh generation are unchanged.
+Playback follows tool-controller speeds. If cutting or mesh updates cannot keep
+up, the preview slows down instead of jumping ahead through a pass. Timeline
+positions, stock resolution and mesh generation are unchanged. Stock updates and
+seeks include the exact partial move at the current sampled position.
 
 ## Tests
 Run the headless worker regression checks (no FreeCAD installation required):

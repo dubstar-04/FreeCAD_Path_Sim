@@ -56,6 +56,9 @@ class Clock:
 
 
 class Engine:
+    cutDuration = 0.05
+    meshDuration = 0.4
+
     def __init__(self, clock):
         self.clock = clock
         self.positions = []
@@ -73,12 +76,12 @@ class Engine:
 
     def processPosition(self, placement):
         self.positions.append(placement.Base.x)
-        self.clock.now += 0.05
+        self.clock.now += self.cutDuration
         if self.on_position is not None:
             self.on_position()
 
     def getMesh(self):
-        self.clock.now += 0.4
+        self.clock.now += self.meshDuration
         self.meshes.append(tuple(self.positions))
         if self.on_mesh is not None:
             self.on_mesh()
@@ -176,6 +179,81 @@ class SeekTests(unittest.TestCase):
         self.assertGreater(len(self.sim.engine.meshes), 1)
         self.assertGreater(len(self.sim.progress.calls), 1)
         self.assertEqual(len(self.sim.complete.calls), 1)
+
+    def configure_paced_turning(self):
+        """Set up two long straight passes with deferred cuts and a fake wait."""
+        self.clock.now = 1
+        for operation in self.operations:
+            operation.MinDiameter = 0
+            operation.MaxDiameter = 100
+        self.sim.engine.supportsTurningSweeps = True
+        self.sim.engine.setTurningTool = self.sim.engine.setTool
+        self.sim.pathPoints = [
+            (SimpleNamespace(x=i, y=0, z=0), self.operations[i // 40])
+            for i in range(80)]
+        self.sim.pathRapid = [False] * 80
+        self.sim.turningCommandEnds = {1, 40, 41, 80}
+        self.sim.stepDelay = 0.05
+        self.sim.operationSpeeds = lambda operation: {
+            "HorizFeed": 20, "VertFeed": 20, "HorizRapid": 40, "VertRapid": 40}
+
+        def wait(duration):
+            self.clock.now += duration
+
+        self.sim._wake.wait = wait
+
+    def test_slow_mesh_does_not_fast_forward_turning_playback(self):
+        self.configure_paced_turning()
+        poses = []
+        frames = []
+        self.sim.updatePos.callback = lambda placement: poses.append(self.sim.idx)
+        self.sim.engine.on_mesh = lambda: frames.append(self.sim.idx)
+        self.sim.running = True
+        self.run_worker()
+        self.assertGreater(len(frames), 4)
+        self.assertLessEqual(max(b - a for a, b in zip(poses, poses[1:])), 2)
+        self.assertLessEqual(max(b - a for a, b in zip(frames, frames[1:])), 7)
+        self.assertEqual(self.sim.idx, 80)
+        self.assertIsNone(self.sim._pendingCut)
+
+    def test_fast_turning_playback_preserves_controller_timing(self):
+        self.configure_paced_turning()
+        self.sim.engine.cutDuration = 0
+        self.sim.engine.meshDuration = 0
+        self.sim.running = True
+        self.run_worker()
+        # Two 39 mm feed passes at 20 mm/s; each starts with a locating point.
+        self.assertAlmostEqual(self.clock.now - 1, 2 * 39 / 20)
+        self.assertEqual(self.sim.idx, 80)
+        self.assertEqual(len(self.sim.complete.calls), 1)
+
+    def test_stop_during_paced_turning_flushes_only_the_current_position(self):
+        self.configure_paced_turning()
+
+        def stop(placement):
+            if self.sim.idx >= 8:
+                self.sim.updatePos.callback = None
+                self.sim.stop()
+
+        self.sim.updatePos.callback = stop
+        self.sim.running = True
+        self.run_worker()
+        self.assertLess(self.sim.idx, 40)
+        self.assertEqual(self.sim.engine.positions[-1], self.sim.idx - 1)
+        self.assertIsNone(self.sim._pendingCut)
+        self.assertFalse(self.sim.needsWork())
+
+    def test_turning_seek_stays_unpaced_with_slow_meshes(self):
+        self.configure_paced_turning()
+        waits = []
+        self.sim._wake.wait = waits.append
+        self.sim.skipTo(1)
+        self.run_worker()
+        self.assertEqual(waits, [])
+        self.assertEqual(len(self.sim.engine.positions), 4)
+        self.assertEqual(len(self.sim.engine.meshes), 1)
+        self.assertAlmostEqual(self.clock.now - 1, 4 * 0.05 + 0.4)
+        self.assertEqual(self.sim.idx, 80)
 
     def test_seek_discards_queued_mesh(self):
         self.sim.publishMesh()
