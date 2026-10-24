@@ -22,7 +22,8 @@ run on a machine.
 3. Open a document with a CAM job and activate the CAM workbench.
 4. Select **CAM -> CAM Addons -> Path Simulator Next**.
 5. Select the operations and engine in the task panel, then use **Play** in the
-   viewport timeline to start the simulation. **Stop** stops playback.
+   viewport timeline to start the simulation or **Pause** to pause it.
+   **Jump to end** reconstructs the final stock without playing the remaining moves.
 
 ## Timeline seeking
 Click the timeline or drag its marker to reconstruct the stock at that position.

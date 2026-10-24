@@ -177,13 +177,13 @@ class timeline(QtCore.QObject):
 
         ### collect widget
         self.playButton = self.form.findChild(QtGui.QPushButton, "playButton")
-        self.stopButton = self.form.findChild(QtGui.QPushButton, "stopButton")
+        self.endButton = self.form.findChild(QtGui.QPushButton, "endButton")
         buttonLayout = self.form.findChild(QtGui.QWidget, "buttonGroup").layout()
         buttonLayout.setContentsMargins(0, 0, 0, 0)
         buttonLayout.setSpacing(4)
         buttonLayout.setSizeConstraint(QtGui.QLayout.SetFixedSize)
         self.setPlaying(False)
-        self.stopButton.setIcon(self.stopButton.style().standardIcon(QtGui.QStyle.SP_MediaStop))
+        self.endButton.setIcon(self.endButton.style().standardIcon(QtGui.QStyle.SP_MediaSkipForward))
         self.progressBar = self.form.progressBar
         self.progressBar.setRenderHint(QtGui.QPainter.Antialiasing)
         self.scene = QtGui.QGraphicsScene()
@@ -191,7 +191,7 @@ class timeline(QtCore.QObject):
 
         ### connect
         self.playButton.clicked.connect(self.play)
-        self.stopButton.clicked.connect(self.stop)
+        self.endButton.clicked.connect(self.jumpToEnd)
         # self.progressMarker.progresschange.connect(self.progressUpdate)
         self.progressMarker.skipRequested.connect(self.skip)
         self.timeLine.skipRequested.connect(self.skip)
@@ -280,9 +280,9 @@ class timeline(QtCore.QObject):
         self.playButton.setToolTip(label)
         self.playButton.setAccessibleName(label)
 
-    def stop(self):
-        ''' handle stop signals '''
-        self.stopSignal.emit()
+    def jumpToEnd(self):
+        ''' reconstruct the final stock through the normal timeline seek '''
+        self.skip(self.progressBarWidth)
 
     def skip(self, position):
         ''' handle skip signals '''

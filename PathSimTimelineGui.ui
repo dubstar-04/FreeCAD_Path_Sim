@@ -91,7 +91,7 @@
       </widget>
      </item>
      <item>
-      <widget class="QPushButton" name="stopButton">
+      <widget class="QPushButton" name="endButton">
        <property name="minimumSize">
         <size>
          <width>40</width>
@@ -114,7 +114,10 @@
         <string/>
        </property>
        <property name="toolTip">
-        <string>Stop simulation</string>
+        <string>Jump to end of simulation</string>
+       </property>
+       <property name="accessibleName">
+        <string>Jump to end of simulation</string>
        </property>
        <property name="iconSize">
         <size>
