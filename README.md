@@ -11,6 +11,14 @@ run on a machine.
 * Visulise tool paths
 * Simulate material removal
 
+## Screenshots
+
+### Milling simulation
+![Milling simulation with operation colours and timeline controls](Screenshots/milling_simulation.png)
+
+### Turning simulation
+![Turning simulation with operation colours and timeline controls](Screenshots/turning_simulation.png)
+
 ## Requirements
 * FreeCAD with the CAM workbench (`CAMWorkbench`); the legacy Path workbench is not supported
 * Python3  
