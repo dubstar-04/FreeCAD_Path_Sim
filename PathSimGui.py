@@ -23,6 +23,7 @@
 # ***************************************************************************
 
 import os 
+import time
 
 from PySide import QtGui, QtCore
 
@@ -40,34 +41,56 @@ ui_name = "PathSimGui.ui"
 path_to_ui = dir + os.sep + ui_name
 path_to_engines = dir + os.sep + "engines"
 
+# Operation ids start at 1; id 0 is untouched stock. Red is reserved for errors.
+STOCK_COLOUR = (0.70, 0.72, 0.74)
+OPERATION_COLOURS = [
+	(0.20, 0.55, 0.90),
+	(0.95, 0.75, 0.20),
+	(0.35, 0.75, 0.40),
+	(0.65, 0.40, 0.85),
+	(0.95, 0.55, 0.15),
+	(0.20, 0.75, 0.75),
+	(0.25, 0.30, 0.65),
+	(0.65, 0.80, 0.25),
+]
+
 class PathSimPanel:
 	def __init__(self, obj=None):
 		# self will create a Qt widget from the ui file
 		self.form = FreeCADGui.PySideUic.loadUi(path_to_ui)
+		self.preferences = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/PathSim")
 
 		self.tool = None
 		self.sim = PathSim.PathSim()
 		self.jobs = []
 		self.meshView = None
+		self.colourWarned = False
+		self.meshesShown = 0
+		self._resetMeshTiming()
 		self.counter = 0
+		self._closing = False
 
 		self.timeline = PathSimTimelineGui.timeline()
 
 		# connect ui components
 		self.form.comboJobs.currentIndexChanged.connect(self.onJobChange)
+		self.form.listOperations.itemChanged.connect(self.updateTimeline)
 		self.sim.updatePos.connect(self.setPos)
 		self.sim.complete.connect(self.simComplete)
-		self.sim.updateMesh.connect(self.updateMesh)
+		self.sim.meshReady.connect(self.onMeshReady)
 		self.sim.progress.connect(self.timeline.setProgress)
 		self.sim.cleanup.connect(self.cleanup)
 		self.sim.changedOp.connect(self.loadTool)
+		self.sim.pathReady.connect(self.onPathReady)
+		self.sim.finished.connect(self.onWorkerFinished)
 
 		#self.timeline.quitSignal.connect(self.simStop)
 		self.timeline.playSignal.connect(self.simPlay)
 		self.timeline.stopSignal.connect(self.simStop)
-		self.timeline.skipRequested.connect(self.sim.skipTo)
+		self.timeline.skipRequested.connect(self.simSeek)
 
 		self.setupUi()
+		self.form.comboEngines.currentTextChanged.connect(self.onEngineChange)
 
 	def setupUi(self):
 		jobList = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")
@@ -85,10 +108,28 @@ class PathSimPanel:
 		engines = os.listdir(path_to_engines)
 		for filename in engines:
 			engine_str = "_engine.py"
-			if engine_str in filename:
+			if filename.endswith(engine_str):
 				engineName = filename.replace(".py", "")
 				self.form.comboEngines.addItem(engineName)
-		
+
+		savedEngine = self.preferences.GetString("LastEngine", "")
+		if savedEngine:
+			index = self.form.comboEngines.findText(savedEngine)
+			if index >= 0:
+				self.form.comboEngines.setCurrentIndex(index)
+			else:
+				FreeCAD.Console.PrintWarning(
+					"PathSim: Saved engine '{}' is unavailable; using '{}'.\n".format(
+						savedEngine, self.form.comboEngines.currentText()))
+
+	def onEngineChange(self, engine):
+		if engine:
+			self.preferences.SetString("LastEngine", engine)
+			if not self.sim.isRunning():
+				self.sim.reset()
+				self.timeline.setPlaying(False)
+				self.timeline.setProgress(0)
+
 	def reject(self):
 		self.quit()
 
@@ -101,13 +142,15 @@ class PathSimPanel:
 			FreeCAD.Console.PrintMessage("\nApply Signal")
 
 	def quit(self):
-		self.timeline.quit()
+		self._closing = True
 		self.simStop()
+		self.sim.wait()
+		self.timeline.quit()
 		self.cleanup()
 		FreeCADGui.Control.closeDialog()
 		
 	def getStandardButtons(self):
-		return int(QtGui.QDialogButtonBox.Ok | QtGui.QDialogButtonBox.Cancel)
+		return QtGui.QDialogButtonBox.Ok | QtGui.QDialogButtonBox.Cancel
 
 	def onJobChange(self):
 		j = self.jobs[self.form.comboJobs.currentIndex()]
@@ -116,11 +159,15 @@ class PathSimPanel:
 		self.operations = []
 		for op in j.Operations.OutList:
 			if PathUtil.opProperty(op, 'Active'):
-				listItem = QtGui.QListWidgetItem(op.ViewObject.Icon, op.Label)
+				colour = OPERATION_COLOURS[len(self.operations) % len(OPERATION_COLOURS)]
+				swatch = QtGui.QPixmap(16, 16)
+				swatch.fill(QtGui.QColor.fromRgbF(*colour))
+				listItem = QtGui.QListWidgetItem(QtGui.QIcon(swatch), op.Label)
 				listItem.setFlags(listItem.flags() | QtCore.Qt.ItemIsUserCheckable)
 				listItem.setCheckState(QtCore.Qt.CheckState.Checked)
 				self.operations.append(op)
 				self.form.listOperations.addItem(listItem)
+		self.updateTimeline()
 
 	def getOperations(self):
 		activeOps = []
@@ -130,24 +177,73 @@ class PathSimPanel:
 
 		return activeOps
 
+	def updateTimeline(self):
+		if not self.sim.isRunning():
+			operationIds = {op.Name: index + 1 for index, op in enumerate(self.operations)}
+			self.sim.setOperations(self.getOperations(), operationIds)
+			self.sim.pathPoints = self.sim.discretizePath()
+			self.onPathReady(self.sim.getOperationRanges())
+			self.timeline.setPlaying(False)
+			self.timeline.setProgress(0)
+
+	def onPathReady(self, ranges):
+		self.timeline.setOperationRanges([
+			(start, end, QtGui.QColor.fromRgbF(
+				*OPERATION_COLOURS[(operationId - 1) % len(OPERATION_COLOURS)]))
+			for start, end, operationId in ranges])
+
 	def simPlay(self):
-
-		if self.sim.isRunning():
+		if not self.sim.isRunning() and not self.prepareSimulation():
 			return
+		self.sim.play()
+		self.timeline.setPlaying(True)
+		if not self.sim.isRunning():
+			self.startWorker()
 
+	def simSeek(self, progress):
+		if not self.sim.isRunning() and not self.prepareSimulation():
+			return
+		self.sim.skipTo(progress)
+		if not self.sim.isRunning():
+			self.startWorker()
+
+	def prepareSimulation(self):
+		if self.sim.initialised:
+			return True
 		operations = self.getOperations()
 		if len(operations) == 0:
 			print("No Operations active in selected job")
-			return
+			return False
 		
 		self.cleanup()
+		self.updateTimeline()
+		self.colourWarned = False
+		self.meshesShown = 0
+		self._resetMeshTiming()
 		self.meshView = FreeCAD.ActiveDocument.addObject("Mesh::Feature", "cutshape")
 		job = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")[0]
 		self.meshView.Mesh = Mesh.Mesh(job.Stock.Shape.tessellate(0.1))
 
-		self.sim.setupEngine(self.form.comboEngines.currentText())
-		self.sim.setOperations(operations)
+		return self.sim.setupEngine(self.form.comboEngines.currentText())
+
+	def startWorker(self):
+		self.setSelectionEnabled(False)
 		self.sim.start()
+
+	def onWorkerFinished(self):
+		if self._closing or self.sim.isRunning():
+			return
+		self.onMeshReady()
+		self.reportMeshTiming()
+		self.timeline.setPlaying(self.sim.running)
+		if self.sim.needsWork():
+			self.startWorker()
+		else:
+			self.setSelectionEnabled(True)
+
+	def setSelectionEnabled(self, enabled):
+		for widget in (self.form.comboJobs, self.form.comboEngines, self.form.listOperations):
+			widget.setEnabled(enabled)
 	
 	def loadTool(self, op):
 		''' load the tool for the operation '''
@@ -157,12 +253,13 @@ class PathSimPanel:
 		self.tool.Shape = op.ToolController.Tool.Shape
 
 	def simStop(self):
-		if self.sim.isRunning() or not self.sim.isFinished():
-			self.sim.stop()
+		self.sim.stop()
+		self.timeline.setPlaying(False)
 
 	def setPos(self, pos):
 		# update tool position 
-		self.tool.Placement = pos
+		if self.tool is not None:
+			self.tool.Placement = pos
 
 	def cleanup(self):
 		self.cleanupStock()
@@ -182,13 +279,81 @@ class PathSimPanel:
 
 	def simComplete(self):
 		''' slot called on simulation completion'''
+		self.reportMeshTiming()
 		self.cleanupTool()
 
-	def updateMesh(self, mesh):
-		''' slot called at intervals to update the meshView'''
-		if self.meshView is not None:
-			self.meshView.Mesh = mesh
-			FreeCAD.ActiveDocument.recompute()
+	def onMeshReady(self):
+		''' slot called when the simulation has a new mesh. Only the newest mesh is
+		displayed, meshes that arrive while the view is busy are skipped '''
+		frame = self.sim.takeMesh()
+		if frame is not None:
+			self.updateMesh(*frame)
+
+	def updateMesh(self, mesh, faceOperationIds=None):
+		''' update the meshView '''
+		if self.meshView is None:
+			return
+
+		start = time.perf_counter()
+		self.meshView.Mesh = mesh
+		assigned = time.perf_counter()
+		FreeCAD.ActiveDocument.recompute()
+		recomputed = time.perf_counter()
+		# recompute resets the view's materials, so colours are applied after it
+		self.applyFaceColours(mesh, faceOperationIds)
+		finished = time.perf_counter()
+
+		self.meshesShown += 1
+		self._meshTiming[0] += 1
+		self._meshTiming[1] += assigned - start
+		self._meshTiming[2] += recomputed - assigned
+		self._meshTiming[3] += finished - recomputed
+		if self._meshTiming[0] >= 20:
+			self.reportMeshTiming()
+
+	def _resetMeshTiming(self):
+		self._meshTiming = [0, 0.0, 0.0, 0.0]  # meshes, assign, recompute and colour seconds
+
+	def reportMeshTiming(self):
+		''' report display timings since the last report '''
+		shown, assign, recompute, colour = self._meshTiming
+		if not shown:
+			return
+
+		published = self.sim.meshesPublished
+		FreeCAD.Console.PrintMessage(
+			"[PathSim display] meshes_shown={} meshes_skipped={} assign_avg_ms={:.3f} "
+			"recompute_avg_ms={:.3f} colour_avg_ms={:.3f}\n".format(
+				self.meshesShown, max(0, published - self.meshesShown),
+				assign * 1000 / shown, recompute * 1000 / shown, colour * 1000 / shown))
+		self._resetMeshTiming()
+
+	def applyFaceColours(self, mesh, faceOperationIds):
+		''' colour each face by the last operation that cut it '''
+		if faceOperationIds is None:
+			return
+
+		if len(faceOperationIds) != mesh.CountFacets:
+			if not self.colourWarned:
+				self.colourWarned = True
+				FreeCAD.Console.PrintWarning(
+					"PathSim: {} operation ids for {} faces, colouring skipped\n".format(
+						len(faceOperationIds), mesh.CountFacets))
+			return
+
+		if "FaceColors" not in self.meshView.PropertiesList:
+			self.meshView.addProperty("App::PropertyColorList", "FaceColors", "PathSim")
+
+		palette = [STOCK_COLOUR] + [
+			OPERATION_COLOURS[(operationId - 1) % len(OPERATION_COLOURS)]
+			for operationId in range(1, max(faceOperationIds, default=0) + 1)
+		]
+		self.meshView.FaceColors = [palette[operationId] for operationId in faceOperationIds]
+
+		# the mesh was replaced, so the view needs to apply the colours again
+		view = self.meshView.ViewObject
+		view.Coloring = False
+		view.Coloring = True
 
 def Show():
 	panel = PathSimPanel()

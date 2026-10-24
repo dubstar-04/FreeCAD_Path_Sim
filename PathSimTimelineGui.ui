@@ -7,30 +7,63 @@
     <x>0</x>
     <y>0</y>
     <width>500</width>
-    <height>125</height>
+    <height>76</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Form</string>
   </property>
+  <property name="styleSheet">
+   <string notr="true">QPushButton { background: transparent; border: none; padding: 0; outline: none; }</string>
+  </property>
   <layout class="QGridLayout" name="gridLayout">
-   <item row="0" column="0">
+   <property name="leftMargin">
+    <number>8</number>
+   </property>
+   <property name="topMargin">
+    <number>4</number>
+   </property>
+   <property name="rightMargin">
+    <number>8</number>
+   </property>
+   <property name="bottomMargin">
+    <number>4</number>
+   </property>
+   <property name="verticalSpacing">
+    <number>4</number>
+   </property>
+   <item row="0" column="0" alignment="Qt::AlignHCenter">
+    <widget class="QWidget" name="buttonGroup">
     <layout class="QHBoxLayout" name="horizontalLayout">
-     <item>
-      <spacer name="horizontalSpacer">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>219</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
+     <property name="leftMargin">
+      <number>0</number>
+     </property>
+     <property name="topMargin">
+      <number>0</number>
+     </property>
+     <property name="rightMargin">
+      <number>0</number>
+     </property>
+     <property name="bottomMargin">
+      <number>0</number>
+     </property>
+     <property name="spacing">
+      <number>4</number>
+     </property>
      <item>
       <widget class="QPushButton" name="playButton">
+       <property name="minimumSize">
+        <size>
+         <width>40</width>
+         <height>40</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>40</width>
+         <height>40</height>
+        </size>
+       </property>
        <property name="autoFillBackground">
         <bool>false</bool>
        </property>
@@ -40,10 +73,8 @@
        <property name="text">
         <string/>
        </property>
-       <property name="icon">
-        <iconset>
-         <normalon>:/icons/Path_BPlay.svg</normalon>
-        </iconset>
+       <property name="toolTip">
+        <string>Start simulation</string>
        </property>
        <property name="iconSize">
         <size>
@@ -60,7 +91,19 @@
       </widget>
      </item>
      <item>
-      <widget class="QPushButton" name="stopButton">
+      <widget class="QPushButton" name="endButton">
+       <property name="minimumSize">
+        <size>
+         <width>40</width>
+         <height>40</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>40</width>
+         <height>40</height>
+        </size>
+       </property>
        <property name="autoFillBackground">
         <bool>false</bool>
        </property>
@@ -70,10 +113,11 @@
        <property name="text">
         <string/>
        </property>
-       <property name="icon">
-        <iconset theme=":/icons/Path_BStop.svg">
-         <normalon>:/icons/Path_BStop.svg</normalon>
-        </iconset>
+       <property name="toolTip">
+        <string>Jump to end of simulation</string>
+       </property>
+       <property name="accessibleName">
+        <string>Jump to end of simulation</string>
        </property>
        <property name="iconSize">
         <size>
@@ -88,21 +132,9 @@
         <bool>true</bool>
        </property>
       </widget>
-     </item>
-     <item>
-      <spacer name="horizontalSpacer_2">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>219</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
      </item>
     </layout>
+    </widget>
    </item>
    <item row="1" column="0">
     <widget class="QGraphicsView" name="progressBar">
@@ -115,7 +147,13 @@
      <property name="maximumSize">
       <size>
        <width>16777215</width>
-       <height>25</height>
+       <height>24</height>
+      </size>
+     </property>
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>24</height>
       </size>
      </property>
      <property name="styleSheet">
@@ -134,8 +172,6 @@
    </item>
   </layout>
  </widget>
- <resources>
-  <include location="../../GitHub/FreeCAD/src/Mod/Path/Gui/Resources/Path.qrc"/>
- </resources>
+ <resources/>
  <connections/>
 </ui>

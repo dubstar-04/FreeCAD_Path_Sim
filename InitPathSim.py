@@ -22,6 +22,7 @@
 # *                                                                         *
 # ***************************************************************************
 
+import FreeCAD
 import FreeCADGui
 from PySide import QtGui
 import PathSimGui, PathSim
@@ -35,35 +36,48 @@ def getIcon(iconName):
 
 def updateMenu(workbench):
 
-    if workbench == 'PathWorkbench':
+    if workbench == 'CAMWorkbench':
     
         print('Path Simulator Addon loaded:', workbench)
         
         mw = FreeCADGui.getMainWindow()
         addonMenu = None
 
-        # Find the main path menu
-        pathMenu = mw.findChild(QtGui.QMenu, "&Path")
+        camMenu = None
+        # Detached menus remain as children after a workbench switch.
+        activeActions = mw.menuBar().actions()
+        for menu in mw.findChildren(QtGui.QMenu, "&CAM"):
+            if menu.menuAction() in activeActions:
+                camMenu = menu
+                break
+        if camMenu is None:
+            FreeCAD.Console.PrintError("Path Simulator: CAM menu not found.\n")
+            return
 
-        for menu in pathMenu.actions():
-            if menu.text() == "Path Addons":
-                # create a new addon menu
+        for menu in camMenu.actions():
+            if menu.menu() is not None and menu.menu().objectName() == "CAM_Addons":
                 addonMenu = menu.menu()
                 break
 
         if addonMenu is None:
-            addonMenu = QtGui.QMenu("Path Addons")
-            addonMenu.setObjectName("Path_Addons")
+            addonMenu = QtGui.QMenu("CAM Addons", camMenu)
+            addonMenu.setObjectName("CAM_Addons")
 
-            # Find the dressup menu entry
-            dressupMenu = mw.findChild(QtGui.QMenu, "Path Dressup")
+            dressupMenu = camMenu.findChild(QtGui.QMenu, "Path Dressup")
 
-            pathMenu.insertMenu(dressupMenu.menuAction(), addonMenu)
+            if dressupMenu is not None:
+                camMenu.insertMenu(dressupMenu.menuAction(), addonMenu)
+            else:
+                camMenu.addMenu(addonMenu)
 
-        # create an action for this addon
+        for action in addonMenu.actions():
+            if action.objectName() == "PathSim_Show":
+                return
+
         action = QtGui.QAction(addonMenu)
+        action.setObjectName("PathSim_Show")
         action.setText("Path Simulator Next")
-        action.setIcon(QtGui.QPixmap(getIcon('Path_Sim.svg')))
+        action.setIcon(QtGui.QIcon(getIcon('Path_Sim.svg')))
         action.setStatusTip("Simulate CNC Toolpath")
         action.triggered.connect(PathSimGui.Show)
 

@@ -38,8 +38,8 @@ mw = FreeCADGui.getMainWindow()
 class ProgressGraphicsShape(QtGui.QGraphicsObject):
     ''' graphics item to represent the progress marker on the timeline '''
 
-    progresschange = QtCore.Signal(int)
-    skipRequested = QtCore.Signal(int)
+    progresschange = QtCore.Signal(float)
+    skipRequested = QtCore.Signal(float)
 
     def __init__(self, w, h):
         super().__init__()
@@ -49,6 +49,7 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
         self.width = w
         self.height = h
         self.skipping = False  # true if the widget is being dragged
+        self.segments = []
         self.brush = QtGui.QBrush()
         self.brush.setStyle(QtCore.Qt.SolidPattern)
         self.pen = QtGui.QPen()
@@ -58,9 +59,11 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
         self.pen.setColor(colour)
 
     def setRect(self, x, y, w, h):
+        self.prepareGeometryChange()
         self.setPos(x, y)
         self.width = w
         self.height = h
+        self.update()
 
     def setMaxX(self, x):
         self.xMax = x
@@ -71,13 +74,29 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
     def setPen(self, pen):
         self.pen = pen
 
+    def setSegments(self, segments):
+        self.segments = list(segments)
+        self.update()
+
     def paint(self, painter, option, widget):
         painter.setBrush(self.brush)
         painter.setPen(self.pen)
-        painter.drawRect(0, 0, self.width, self.height)
+        painter.drawRect(QtCore.QRectF(
+            0, -self.height / 2, self.width, self.height))
+        if self.segments:
+            painter.save()
+            painter.setPen(QtCore.Qt.NoPen)
+            for start, end, colour in self.segments:
+                painter.setBrush(colour)
+                painter.drawRect(QtCore.QRectF(
+                    start * self.width, -self.height / 2,
+                    (end - start) * self.width, self.height))
+            painter.restore()
 
     def boundingRect(self):
-        return QtCore.QRectF(0, 0, self.width, self.height)
+        ''' include a larger click target around the visible timeline '''
+        height = max(24, self.height)
+        return QtCore.QRectF(0, -height / 2, self.width, height)
 
     def itemChange(self, change, value):
 
@@ -98,13 +117,35 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
         return value
 
     def mouseReleaseEvent(self, event):
-        # print("mouse release event", event)
-        self.skipRequested.emit(event.pos().x())
+        movable = self.flags() & QtGui.QGraphicsItem.ItemIsMovable
+        if movable:
+            super().mouseReleaseEvent(event)
+        position = self.pos().x() if movable else event.pos().x()
         self.skipping = False
+        self.skipRequested.emit(position)
+        event.accept()
 
     def mousePressEvent(self, event):
-        # print("mouse down event", event)
         self.skipping = True
+        if self.flags() & QtGui.QGraphicsItem.ItemIsMovable:
+            super().mousePressEvent(event)
+        else:
+            event.accept()
+
+
+class ProgressMarker(ProgressGraphicsShape):
+    def boundingRect(self):
+        return QtCore.QRectF(-self.width / 2, -self.height / 2, self.width, self.height)
+
+    def shape(self):
+        path = QtGui.QPainterPath()
+        path.addEllipse(self.boundingRect())
+        return path
+
+    def paint(self, painter, option, widget):
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(self.brush)
+        painter.drawEllipse(self.boundingRect())
 
 
 class timeline(QtCore.QObject):
@@ -122,33 +163,46 @@ class timeline(QtCore.QObject):
         self.form.setParent(mw.centralWidget())
         self.form.setWindowFlags(QtCore.Qt.Widget | QtCore.Qt.FramelessWindowHint | QtCore.Qt.CustomizeWindowHint)
         self.form.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        mw.installEventFilter(self)
 
         # timeline members
         self.progress = 0  # progess complete as a float i.e. 1.0 = %100 
         self.progressMarker = None  # graphics item representing the progress marker
         self.progressBarWidth = 0  # length of the timeline used for progess calculations and positions
 
-        self.timeLine = ProgressGraphicsShape(10, 10)
-        self.progressMarker = ProgressGraphicsShape(10, 10)
+        self.timeLine = ProgressGraphicsShape(10, 12)
+        self.timeLine.setFlag(QtGui.QGraphicsItem.ItemIsMovable, False)
+        self.progressMarker = ProgressMarker(16, 16)
+        self.progressMarker.setZValue(1)
 
 
         ### collect widget
-        self.playButton = self.form.playButton
-        self.stopButton = self.form.stopButton
+        self.playButton = self.form.findChild(QtGui.QPushButton, "playButton")
+        self.endButton = self.form.findChild(QtGui.QPushButton, "endButton")
+        buttonLayout = self.form.findChild(QtGui.QWidget, "buttonGroup").layout()
+        buttonLayout.setContentsMargins(0, 0, 0, 0)
+        buttonLayout.setSpacing(4)
+        buttonLayout.setSizeConstraint(QtGui.QLayout.SetFixedSize)
+        self.setPlaying(False)
+        self.endButton.setIcon(self.endButton.style().standardIcon(QtGui.QStyle.SP_MediaSkipForward))
         self.progressBar = self.form.progressBar
+        self.progressBar.setRenderHint(QtGui.QPainter.Antialiasing)
         self.scene = QtGui.QGraphicsScene()
         self.progressBar.setScene(self.scene)
 
         ### connect
         self.playButton.clicked.connect(self.play)
-        self.stopButton.clicked.connect(self.stop)
+        self.endButton.clicked.connect(self.jumpToEnd)
         # self.progressMarker.progresschange.connect(self.progressUpdate)
-        # self.progressMarker.skipRequested.connect(self.skip)
+        self.progressMarker.skipRequested.connect(self.skip)
         self.timeLine.skipRequested.connect(self.skip)
 
         # initialise form
         self.initProgressBar()
+        self._positionTimer = QtCore.QTimer(self)
+        self._positionTimer.setSingleShot(True)
+        self._positionTimer.timeout.connect(self.setPosition)
+        mw.installEventFilter(self)
+        mw.centralWidget().installEventFilter(self)
         self.setPosition()
         self.setProgress(0)
 
@@ -164,9 +218,11 @@ class timeline(QtCore.QObject):
 
 
     def eventFilter(self, object, event):
-        ''' handle resize events for the freecad ui '''
-        if event.type() == QtCore.QEvent.Type.Resize:
-            self.setPosition()
+        ''' reposition after FreeCAD has finished updating its dock layout '''
+        if event.type() in (
+                QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.LayoutRequest,
+                QtCore.QEvent.Type.Show):
+            self._positionTimer.start(0)
 
         return False
 
@@ -177,6 +233,9 @@ class timeline(QtCore.QObject):
         position = self.progress * self.progressBarWidth
         if self.progressMarker.skipping is False:
             self.progressMarker.setPos(position, pos.y())
+
+    def setOperationRanges(self, ranges):
+        self.timeLine.setSegments(ranges)
 
     def progressUpdate(self, position):
         ''' handle progress changes from the progress marker position '''
@@ -192,28 +251,43 @@ class timeline(QtCore.QObject):
         cengeom = cen.geometry()
 
         x = cengeom.width() * 0.1
-        y = cengeom.height() - self.form.height() - 50
+        y = max(0, cengeom.height() - self.form.height() - 36)
         newWidth = cengeom.width() * 0.8
         newHeight = self.form.height()
-        self.form.setGeometry(x, y, newWidth, newHeight)
+        self.form.setGeometry(round(x), round(y), round(newWidth), newHeight)
 
         self.progressBarWidth = self.form.geometry().width() * 0.9
         self.progressMarker.setMaxX(self.progressBarWidth)
-        self.timeLine.setRect(self.timeLine.pos().x(), self.timeLine.pos().y(), self.progressBarWidth, 10)
+        self.timeLine.setRect(0, 0, self.progressBarWidth, self.timeLine.height)
+        radius = self.progressMarker.width / 2
+        halfHeight = max(radius, self.timeLine.boundingRect().height() / 2)
+        self.scene.setSceneRect(
+            -radius, -halfHeight, self.progressBarWidth + 2 * radius, 2 * halfHeight)
         self.setProgress(self.progress)
 
     def play(self):
-        ''' handle play signals '''
-        self.progress = 0
-        self.playSignal.emit()
+        ''' toggle playback using the state confirmed by the task panel '''
+        if self.playing:
+            self.stopSignal.emit()
+        else:
+            self.playSignal.emit()
 
-    def stop(self):
-        ''' handle stop signals '''
-        self.stopSignal.emit()
+    def setPlaying(self, playing):
+        self.playing = playing
+        icon = QtGui.QStyle.SP_MediaPause if playing else QtGui.QStyle.SP_MediaPlay
+        label = "Pause simulation" if playing else "Play simulation"
+        self.playButton.setIcon(self.playButton.style().standardIcon(icon))
+        self.playButton.setToolTip(label)
+        self.playButton.setAccessibleName(label)
+
+    def jumpToEnd(self):
+        ''' reconstruct the final stock through the normal timeline seek '''
+        self.skip(self.progressBarWidth)
 
     def skip(self, position):
         ''' handle skip signals '''
-        progress = position / self.progressBarWidth
+        progress = max(0.0, min(1.0, position / self.progressBarWidth))
+        self.setProgress(progress)
         self.skipRequested.emit(progress)
 
     def show(self):
@@ -222,5 +296,8 @@ class timeline(QtCore.QObject):
 
     def quit(self, data=None):
         ''' handle the form being closed'''
+        self._positionTimer.stop()
+        mw.removeEventFilter(self)
+        mw.centralWidget().removeEventFilter(self)
         self.form.close()
         self.deleteLater()
