@@ -81,7 +81,8 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
     def paint(self, painter, option, widget):
         painter.setBrush(self.brush)
         painter.setPen(self.pen)
-        painter.drawRect(self.boundingRect())
+        painter.drawRect(QtCore.QRectF(
+            0, -self.height / 2, self.width, self.height))
         if self.segments:
             painter.save()
             painter.setPen(QtCore.Qt.NoPen)
@@ -93,7 +94,9 @@ class ProgressGraphicsShape(QtGui.QGraphicsObject):
             painter.restore()
 
     def boundingRect(self):
-        return QtCore.QRectF(0, -self.height / 2, self.width, self.height)
+        ''' include a larger click target around the visible timeline '''
+        height = max(24, self.height)
+        return QtCore.QRectF(0, -height / 2, self.width, height)
 
     def itemChange(self, change, value):
 
@@ -166,7 +169,7 @@ class timeline(QtCore.QObject):
         self.progressMarker = None  # graphics item representing the progress marker
         self.progressBarWidth = 0  # length of the timeline used for progess calculations and positions
 
-        self.timeLine = ProgressGraphicsShape(10, 6)
+        self.timeLine = ProgressGraphicsShape(10, 12)
         self.timeLine.setFlag(QtGui.QGraphicsItem.ItemIsMovable, False)
         self.progressMarker = ProgressMarker(16, 16)
         self.progressMarker.setZValue(1)
@@ -255,10 +258,11 @@ class timeline(QtCore.QObject):
 
         self.progressBarWidth = self.form.geometry().width() * 0.9
         self.progressMarker.setMaxX(self.progressBarWidth)
-        self.timeLine.setRect(0, 0, self.progressBarWidth, 6)
+        self.timeLine.setRect(0, 0, self.progressBarWidth, self.timeLine.height)
         radius = self.progressMarker.width / 2
+        halfHeight = max(radius, self.timeLine.boundingRect().height() / 2)
         self.scene.setSceneRect(
-            -radius, -radius, self.progressBarWidth + 2 * radius, 2 * radius)
+            -radius, -halfHeight, self.progressBarWidth + 2 * radius, 2 * halfHeight)
         self.setProgress(self.progress)
 
     def play(self):
